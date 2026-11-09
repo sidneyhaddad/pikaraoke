@@ -26,6 +26,11 @@
           }
 
           $("#now-playing").html(nowPlayingHtml);
+          // Sync slider with current transpose value
+          if (slider && !transposePolling) {
+            slider.value = obj.transpose_value;
+            output.innerHTML = getSemitonesLabel(obj.transpose_value);
+          }
           $(".control-box").show();
         } else {
           // {# MSG: Message which shows in the "Now Playing" section when there is no song currently playing #}
@@ -61,11 +66,15 @@
       });
     }
 
+  var transposePolling = null;
+  var slider = null;
+  var output = null;
+
   $(function () {
     $(".control-box").hide();
 
-    var slider = document.getElementById("transpose");
-    var output = document.getElementById("semitones-label");
+    slider = document.getElementById("transpose");
+    output = document.getElementById("semitones-label");
     if (slider) {
       output.innerHTML = getSemitonesLabel(slider.value);
       // Update the current slider value (each time you drag the slider handle)
@@ -81,12 +90,43 @@
       } else {
         value = 0;
       }
-      r = confirm("Transpose this song: " + getSemitonesLabel(value) + "?");
-      if (r) {
-        $.get("/transpose/" + value);
-      }
-      slider.value = 0;
-      output.innerHTML = getSemitonesLabel(slider.value);
+      if (value == 0) return;
+      $("#transpose-modal-text").text("Transpose this song: " + getSemitonesLabel(value) + "?");
+      $("#transpose-modal").addClass("is-active");
+      $("#transpose-modal").data("semitones", value);
+    });
+
+    function startTranspose(mode) {
+      var value = $("#transpose-modal").data("semitones");
+      $("#transpose-modal").removeClass("is-active");
+      $(".control-box").hide();
+      $("#transpose-progress-box").show();
+      $("#transpose-progress-bar").val(0);
+      $("#transpose-progress-text").text("0%");
+      $.get("/transpose/" + value + "/" + mode);
+      transposePolling = setInterval(pollTransposeStatus, 500);
+    }
+
+    function pollTransposeStatus() {
+      $.get("/transpose/status", function (data) {
+        var obj = (typeof data === "string") ? JSON.parse(data) : data;
+        $("#transpose-progress-bar").val(obj.progress);
+        $("#transpose-progress-text").text(obj.progress + "%");
+        if (!obj.transposing) {
+          clearInterval(transposePolling);
+          transposePolling = null;
+          $("#transpose-progress-box").hide();
+          $(".control-box").show();
+          getNowPlaying();
+        }
+      });
+    }
+
+    $("#transpose-continue").click(function () { startTranspose("continue"); });
+    $("#transpose-restart").click(function () { startTranspose("restart"); });
+    $("#transpose-cancel").click(function () {
+      $("#transpose-modal").removeClass("is-active");
+      getNowPlaying();
     });
 
     $("#pause-resume").click(function () {
@@ -206,7 +246,7 @@
           type="range"
           min="-12"
           max="12"
-          value="0"
+          value="{{ transpose_value }}"
           width="300px"
           class="transpose-slider"
           id="transpose"
@@ -226,6 +266,36 @@
   {% endif %}
 
 {% endif %}
+
+<div class="modal" id="transpose-modal">
+  <div class="modal-background"></div>
+  <div class="modal-card">
+    <header class="modal-card-head">
+      <p class="modal-card-title">
+        {# MSG: Title of the modal dialog for changing the key/pitch. #}
+        {% trans %}Change Key{% endtrans %}
+      </p>
+    </header>
+    <section class="modal-card-body">
+      <p id="transpose-modal-text"></p>
+    </section>
+    <footer class="modal-card-foot">
+      {# MSG: Button label to continue playing from current position after key change. #}
+      <button class="button is-success" id="transpose-continue">{% trans %}Continue where left off{% endtrans %}</button>
+      {# MSG: Button label to restart the song from the beginning after key change. #}
+      <button class="button is-info" id="transpose-restart">{% trans %}Start from beginning{% endtrans %}</button>
+      {# MSG: Button label to cancel the key change. #}
+      <button class="button" id="transpose-cancel">{% trans %}Cancel{% endtrans %}</button>
+    </footer>
+  </div>
+</div>
+
+<div id="transpose-progress-box" class="has-background-black-bis box" style="display:none; max-width:500px">
+  {# MSG: Title shown while the key change is being processed. #}
+  <h4>{% trans %}Changing key...{% endtrans %}</h4>
+  <progress class="progress is-success" id="transpose-progress-bar" value="0" max="100">0%</progress>
+  <p id="transpose-progress-text">0%</p>
+</div>
 
 <div></div>
 {% endblock %}

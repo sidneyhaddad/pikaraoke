@@ -76,7 +76,7 @@ def home():
         "home.html",
         site_title=site_name,
         title="Home",
-        show_transpose=k.use_vlc,
+        show_transpose=True,
         transpose_value=k.now_playing_transpose,
         admin=is_admin()
     )
@@ -121,6 +121,7 @@ def nowplaying():
         rc = {
             "now_playing": k.now_playing,
             "now_playing_user": k.now_playing_user,
+            "now_playing_filepath": k.now_playing_filename,
             "up_next": next_song,
             "next_user": next_user,
             "is_paused": k.is_paused,
@@ -221,16 +222,59 @@ def pause():
     return redirect(url_for("home"))
 
 
-@app.route("/transpose/<semitones>", methods=["GET"])
+@app.route("/transpose/status", methods=["GET"])
+def transpose_status():
+    transposing = bool(k.vlcclient and k.vlcclient.is_transposing)
+    progress = k.vlcclient.transpose_progress if (k.vlcclient and transposing) else 0
+    return jsonify({"transposing": transposing, "progress": progress})
+
+
+@app.route("/transpose/<int:semitones>/<mode>", methods=["GET"])
+def transpose_with_mode(semitones, mode):
+    from_beginning = (mode == "restart")
+    k.transpose_current(semitones, from_beginning=from_beginning)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/transpose/<int:semitones>", methods=["GET"])
 def transpose(semitones):
     k.transpose_current(semitones)
-    return redirect(url_for("home"))
+    return jsonify({"status": "ok"})
 
 
 @app.route("/restart")
 def restart():
     k.restart()
     return redirect(url_for("home"))
+
+
+@app.route("/seek")
+def seek():
+    t = request.args.get("t", 0, type=float)
+    k.seek(t)
+    return json.dumps({"success": True})
+
+
+@app.route("/playback_pos")
+def playback_pos():
+    position, duration = k.get_playback_position()
+    return json.dumps({"position": position, "duration": duration})
+
+
+@app.route("/play_transposed")
+def play_transposed():
+    """Play a pre-processed transposed file at a given seek position.
+
+    Used by the WS server when a cached transposed version exists on disk.
+    """
+    filepath = request.args.get("filepath", "")
+    original = request.args.get("original", "")
+    seek_to = request.args.get("seek_to", 0, type=float)
+    semitones = request.args.get("semitones", 0, type=int)
+    if not filepath:
+        return jsonify({"status": "error", "error": "no filepath"})
+    k.play_transposed_file(filepath, original or filepath, semitones, seek_to)
+    return jsonify({"status": "ok"})
 
 
 @app.route("/vol_up")
@@ -484,7 +528,7 @@ def info():
 # Delay system commands to allow redirect to render first
 def delayed_halt(cmd):
     time.sleep(3)
-    k.queue_clear()  # stop all pending omxplayer processes
+    k.queue_clear()
     cherrypy.engine.stop()
     cherrypy.engine.exit()
     k.stop()
@@ -493,10 +537,6 @@ def delayed_halt(cmd):
     if cmd == 1:
         os.system("shutdown now")
     if cmd == 2:
-        os.system("reboot")
-    if cmd == 3:
-        process = subprocess.Popen(["raspi-config", "--expand-rootfs"])
-        process.wait()
         os.system("reboot")
 
 def update_yt_dlp():
@@ -556,19 +596,6 @@ def reboot():
         flash("You don't have permission to Reboot", "is-danger")
     return redirect(url_for("home"))
 
-@app.route("/expand_fs")
-def expand_fs():
-    if (is_admin() and platform == "raspberry_pi"): 
-        flash("Expanding filesystem and rebooting system now!", "is-danger")
-        th = threading.Thread(target=delayed_halt, args=[3])
-        th.start()
-    elif (platform != "raspberry_pi"):
-        flash("Cannot expand fs on non-raspberry pi devices!", "is-danger")
-    else:
-        flash("You don't have permission to resize the filesystem", "is-danger")
-    return redirect(url_for("home"))
-
-
 # Handle sigterm, apparently cherrypy won't shut down without explicit handling
 signal.signal(signal.SIGTERM, lambda signum, stack_frame: k.stop())
 
@@ -588,11 +615,11 @@ def get_default_dl_dir(platform):
     if platform == "raspberry_pi":
         return "/usr/lib/pikaraoke/songs"
     elif platform == "windows":
-        legacy_directory = os.path.expanduser("~\pikaraoke\songs")
+        legacy_directory = os.path.expanduser(r"~\pikaraoke\songs")
         if os.path.exists(legacy_directory):
             return legacy_directory
         else:
-            return "~\pikaraoke-songs"
+            return r"~\pikaraoke-songs"
     else:
         legacy_directory = "~/pikaraoke/songs"
         if os.path.exists(legacy_directory):
@@ -605,13 +632,10 @@ if __name__ == "__main__":
 
     platform = get_platform()
     default_port = 5000
-    default_volume = 0
     default_splash_delay = 5
     default_log_level = logging.INFO
 
     default_dl_dir = get_default_dl_dir(platform)
-    default_omxplayer_path = "/usr/bin/omxplayer"
-    default_adev = "both"
     default_youtubedl_path = get_default_yt_dlp_path(platform)
     default_vlc_path = get_default_vlc_path(platform)
     default_vlc_port = 5002
@@ -620,55 +644,32 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "-p",
-        "--port",
+        "-p", "--port",
         help="Desired http port (default: %d)" % default_port,
         default=default_port,
         required=False,
     )
     parser.add_argument(
-        "-d",
-        "--download-path",
+        "-d", "--download-path",
         help="Desired path for downloaded songs. (default: %s)" % default_dl_dir,
         default=default_dl_dir,
         required=False,
     )
     parser.add_argument(
-        "-o",
-        "--omxplayer-path",
-        help="Path of omxplayer. Only important to raspberry pi hardware. (default: %s)"
-        % default_omxplayer_path,
-        default=default_omxplayer_path,
-        required=False,
-    )
-    parser.add_argument(
-        "-y",
-        "--youtubedl-path",
-        help="Path of youtube-dl. (default: %s)" % default_youtubedl_path,
+        "-y", "--youtubedl-path",
+        help="Path of yt-dlp. (default: %s)" % default_youtubedl_path,
         default=default_youtubedl_path,
         required=False,
     )
     parser.add_argument(
-        "-v",
-        "--volume",
-        help="If using omxplayer, the initial player volume is specified in millibels. Negative values ok. (default: %s , Note: 100 millibels = 1 decibel)."
-        % default_volume,
-        default=default_volume,
-        required=False,
-    )
-    parser.add_argument(
-        "-s",
-        "--splash-delay",
-        help="Delay during splash screen between songs (in secs). (default: %s )"
-        % default_splash_delay,
+        "-s", "--splash-delay",
+        help="Delay during splash screen between songs (in secs). (default: %s)" % default_splash_delay,
         default=default_splash_delay,
         required=False,
     )
     parser.add_argument(
-        "-l",
-        "--log-level",
-        help="Logging level int value (DEBUG: 10, INFO: 20, WARNING: 30, ERROR: 40, CRITICAL: 50). (default: %s )"
-        % default_log_level,
+        "-l", "--log-level",
+        help="Logging level int value (DEBUG: 10, INFO: 20, WARNING: 30, ERROR: 40, CRITICAL: 50). (default: %s)" % default_log_level,
         default=default_log_level,
         required=False,
     )
@@ -679,28 +680,9 @@ if __name__ == "__main__":
         required=False,
     )
     parser.add_argument(
-        "--hide-raspiwifi-instructions",
-        action="store_true",
-        help="Hide RaspiWiFi setup instructions from the splash screen.",
-        required=False,
-    )
-    parser.add_argument(
         "--hide-splash-screen",
         action="store_true",
         help="Hide splash screen before/between songs.",
-        required=False,
-    )
-    parser.add_argument(
-        "--adev",
-        help="Pass the audio output device argument to omxplayer. Possible values: hdmi/local/both/alsa[:device]. If you are using a rpi USB soundcard or Hifi audio hat, try: 'alsa:hw:0,0' Default: '%s'"
-        % default_adev,
-        default=default_adev,
-        required=False,
-    )
-    parser.add_argument(
-        "--dual-screen",
-        action="store_true",
-        help="Output video to both HDMI ports (raspberry pi 4 only)",
         required=False,
     )
     parser.add_argument(
@@ -710,53 +692,41 @@ if __name__ == "__main__":
         required=False,
     )
     parser.add_argument(
-        "--use-omxplayer",
-        action="store_true",
-        help="Use OMX Player to play video instead of the default VLC Player. This may be better-performing on older raspberry pi devices. Certain features like key change and cdg support wont be available. Note: if you want to play audio to the headphone jack on a rpi, you'll need to configure this in raspi-config: 'Advanced Options > Audio > Force 3.5mm (headphone)'",
-        required=False,
-    ),
-    parser.add_argument(
-        "--use-vlc",
-        action="store_true",
-        help="Use VLC Player to play video. Enabled by default. Note: if you want to play audio to the headphone jack on a rpi, see troubleshooting steps in README.md",
-        required=False,
-    ),
-    parser.add_argument(
         "--vlc-path",
         help="Full path to VLC (Default: %s)" % default_vlc_path,
         default=default_vlc_path,
         required=False,
-    ),
+    )
     parser.add_argument(
         "--vlc-port",
         help="HTTP port for VLC remote control api (Default: %s)" % default_vlc_port,
         default=default_vlc_port,
         required=False,
-    ),
+    )
     parser.add_argument(
         "--logo-path",
         help="Path to a custom logo image file for the splash screen. Recommended dimensions ~ 500x500px",
         default=None,
         required=False,
-    ),
+    )
     parser.add_argument(
         "--show-overlay",
         action="store_true",
         help="Show overlay on top of video with pikaraoke QR code and IP",
         required=False,
-    ),
+    )
     parser.add_argument(
         "--admin-password",
-        help="Administrator password, for locking down certain features of the web UI such as queue editing, player controls, song editing, and system shutdown. If unspecified, everyone is an admin.",
+        help="Administrator password, for locking down certain features of the web UI.",
         default=None,
         required=False,
-    ),
+    )
     parser.add_argument(
         "--developer-mode",
-        help="Run in flask developer mode. Only useful for tweaking the web UI in real time. Will disable the splash screen due to pygame main thread conflicts and may require FLASK_ENV=development env variable for full dev mode features.",
+        help="Run in flask developer mode. Disables the splash screen.",
         action="store_true",
         required=False,
-    ),
+    )
     args = parser.parse_args()
 
     if (args.admin_password):
@@ -765,26 +735,16 @@ if __name__ == "__main__":
     app.jinja_env.globals.update(filename_from_path=filename_from_path)
     app.jinja_env.globals.update(url_escape=quote)
 
-    # Handle OMX player if specified
-    if platform == "raspberry_pi" and args.use_omxplayer:
-        args.use_vlc = False
-    else:
-        args.use_vlc = True
+    docker_mode = os.environ.get("DOCKER_MODE", "").lower() in ("1", "true", "yes")
 
-    # check if required binaries exist
-    if not os.path.isfile(args.youtubedl_path):
-        print("Youtube-dl path not found! " + args.youtubedl_path)
-        sys.exit(1)
-    if args.use_vlc and not os.path.isfile(args.vlc_path):
-        print("VLC path not found! " + args.vlc_path)
-        sys.exit(1)
-    if (
-        platform == "raspberry_pi"
-        and not args.use_vlc
-        and not os.path.isfile(args.omxplayer_path)
-    ):
-        print("omxplayer path not found! " + args.omxplayer_path)
-        sys.exit(1)
+    # check if required binaries exist (skip in Docker mode — services run in separate containers)
+    if not docker_mode:
+        if not os.path.isfile(args.youtubedl_path):
+            print("yt-dlp path not found! " + args.youtubedl_path)
+            sys.exit(1)
+        if not os.path.isfile(args.vlc_path):
+            print("VLC path not found! " + args.vlc_path)
+            sys.exit(1)
 
     # setup/create download directory if necessary
     dl_path = os.path.expanduser(args.download_path)
@@ -803,19 +763,12 @@ if __name__ == "__main__":
     k = karaoke.Karaoke(
         port=args.port,
         download_path=dl_path,
-        omxplayer_path=args.omxplayer_path,
         youtubedl_path=args.youtubedl_path,
         splash_delay=args.splash_delay,
         log_level=args.log_level,
-        volume=args.volume,
         hide_ip=args.hide_ip,
-        hide_raspiwifi_instructions=args.hide_raspiwifi_instructions,
         hide_splash_screen=args.hide_splash_screen,
-        omxplayer_adev=args.adev,
-        dual_screen=args.dual_screen,
         high_quality=args.high_quality,
-        use_omxplayer=args.use_omxplayer,
-        use_vlc=args.use_vlc,
         vlc_path=args.vlc_path,
         vlc_port=args.vlc_port,
         logo_path=args.logo_path,
@@ -829,7 +782,6 @@ if __name__ == "__main__":
     else:
         # Start the CherryPy WSGI web server
         cherrypy.tree.graft(app, "/")
-        # Set the configuration of the web server
         cherrypy.config.update(
             {
                 "engine.autoreload.on": False,

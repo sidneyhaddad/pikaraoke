@@ -6,3 +6,7 @@ songs/
 qrcode.png
 .DS_Store
 .venv
+.claude/
+image-build/
+*.img
+*.img.xz

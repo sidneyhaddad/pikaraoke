@@ -1,4 +1,3 @@
-import glob
 import json
 import logging
 import os
@@ -9,26 +8,24 @@ import sys
 import threading
 import time
 import gettext
-from io import BytesIO
 from subprocess import check_output
 from pathlib import Path
 
-import pygame
-import qrcode
 from unidecode import unidecode
 from constants import COLORS
 
-from lib import omxclient, vlcclient
+from lib import vlcclient
 from lib.get_platform import get_platform
 
-if get_platform() != "windows":
-    from signal import SIGALRM, alarm, signal
+DOCKER_MODE = os.environ.get("DOCKER_MODE", "").lower() in ("1", "true", "yes")
+
+if not DOCKER_MODE:
+    import pygame
+    import qrcode
+    if get_platform() != "windows":
+        from signal import SIGALRM, alarm, signal
 
 class Karaoke:
-
-    raspi_wifi_config_ip = "10.0.0.1"
-    raspi_wifi_conf_file = "/etc/raspiwifi/raspiwifi.conf"
-    raspi_wifi_config_installed = os.path.exists(raspi_wifi_conf_file)
 
     queue = []
     available_songs = []
@@ -40,48 +37,36 @@ class Karaoke:
     process = None
     qr_code_path = None
     base_path = os.path.dirname(__file__)
-    volume_offset = 0
     loop_interval = 500  # in milliseconds
-    default_logo_path = os.path.join(base_path, "logo.png")
+    default_logo_path = os.path.join(base_path, "myvikaraoke.png")
+    _cached_logo = None
+    _cached_qr = None
+    _last_queue_snapshot = None
+    _toasts = []
 
     def __init__(
         self,
         port=5000,
         download_path="/usr/lib/pikaraoke/songs",
         hide_ip=False,
-        hide_raspiwifi_instructions=False,
         hide_splash_screen=False,
-        omxplayer_adev="both",
-        dual_screen=False,
         high_quality=False,
-        volume=0,
         log_level=logging.DEBUG,
         splash_delay=2,
         youtubedl_path="youtube-dl",
-        omxplayer_path=None,
-        use_omxplayer=False,
-        use_vlc=True,
         vlc_path=None,
         vlc_port=None,
         logo_path=None,
         show_overlay=False
     ):
 
-        # override with supplied constructor args if provided
         self.port = port
         self.hide_ip = hide_ip
-        self.hide_raspiwifi_instructions = hide_raspiwifi_instructions
         self.hide_splash_screen = hide_splash_screen
-        self.omxplayer_adev = omxplayer_adev
         self.download_path = download_path
-        self.dual_screen = dual_screen
         self.high_quality = high_quality
         self.splash_delay = int(splash_delay)
-        self.volume_offset = volume
         self.youtubedl_path = youtubedl_path
-        self.omxplayer_path = omxplayer_path
-        self.use_omxplayer = use_omxplayer
-        self.use_vlc = use_vlc
         self.vlc_path = vlc_path
         self.vlc_port = vlc_port
         self.logo_path = self.default_logo_path if logo_path == None else logo_path
@@ -90,7 +75,6 @@ class Karaoke:
         # other initializations
         self.platform = get_platform()
         self.vlcclient = None
-        self.omxclient = None
         self.screen = None
 
         logging.basicConfig(
@@ -103,19 +87,12 @@ class Karaoke:
             """
     http port: %s
     hide IP: %s
-    hide RaspiWiFi instructions: %s,
     hide splash: %s
     splash_delay: %s
-    omx audio device: %s
-    dual screen: %s
     high quality video: %s
     download path: %s
-    default volume: %s
     youtube-dl path: %s
-    omxplayer path: %s
     logo path: %s
-    Use OMXPlayer: %s
-    Use VLC: %s
     VLC path: %s
     VLC port: %s
     log_level: %s
@@ -123,19 +100,12 @@ class Karaoke:
             % (
                 self.port,
                 self.hide_ip,
-                self.hide_raspiwifi_instructions,
                 self.hide_splash_screen,
                 self.splash_delay,
-                self.omxplayer_adev,
-                self.dual_screen,
                 self.high_quality,
                 self.download_path,
-                self.volume_offset,
                 self.youtubedl_path,
-                self.omxplayer_path,
                 self.logo_path,
-                self.use_omxplayer,
-                self.use_vlc,
                 self.vlc_path,
                 self.vlc_port,
                 log_level,
@@ -165,22 +135,28 @@ class Karaoke:
 
         self.set_language('pt_BR')
 
-        # get songs from download_path
+        # get songs from database (falls back to filesystem scan)
         self.get_available_songs()
 
         self.get_youtubedl_version()
 
-        # clean up old sessions
-        self.kill_player()
+        # clean up old sessions — kill any leftover VLC processes system-wide
+        if not DOCKER_MODE:
+            subprocess.call(["pkill", "-f", "vlc"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1)
+            self.kill_player()
 
-        self.generate_qr_code()
-        if self.use_vlc:
+        if DOCKER_MODE:
+            from lib.vlc_remote_client import VLCRemoteClient
+            self.vlcclient = VLCRemoteClient()
+            self.hide_splash_screen = True
+            logging.info("Docker mode: using remote VLC client, splash screen disabled")
+        else:
+            self.generate_qr_code()
             if self.show_overlay:
                 self.vlcclient = vlcclient.VLCClient(port=self.vlc_port, path=self.vlc_path, qrcode=self.qr_code_path, url=None if self.hide_ip else self.url)
-            else: 
+            else:
                 self.vlcclient = vlcclient.VLCClient(port=self.vlc_port, path=self.vlc_path)
-        else:
-            self.omxclient = omxclient.OMXClient(path=self.omxplayer_path, adev=self.omxplayer_adev, dual_screen=self.dual_screen, volume_offset=self.volume_offset)
 
         if not self.hide_splash_screen:
             self.initialize_screen()
@@ -205,38 +181,25 @@ class Karaoke:
             s.close()
         return IP
 
-    def get_raspi_wifi_conf_vals(self):
-        """Extract values from the RaspiWiFi configuration file."""
-        f = open(self.raspi_wifi_conf_file, "r")
-        
-        # Define default values.
-        #
-        # References: 
-        # - https://github.com/jasbur/RaspiWiFi/blob/master/initial_setup.py (see defaults in input prompts)
-        # - https://github.com/jasbur/RaspiWiFi/blob/master/libs/reset_device/static_files/raspiwifi.conf
-        #
-        server_port = "80"
-        ssid_prefix = "RaspiWiFi Setup"
-        ssl_enabled = "0"
-        
-        # Override the default values according to the configuration file.
-        for line in f.readlines():
-            if "server_port=" in line:
-                server_port = line.split("t=")[1].strip()
-            elif "ssid_prefix=" in line:
-                ssid_prefix = line.split("x=")[1].strip()
-            elif "ssl_enabled=" in line:
-                ssl_enabled = line.split("d=")[1].strip()
-
-        return (server_port, ssid_prefix, ssl_enabled)
-
     def get_youtubedl_version(self):
+        if DOCKER_MODE:
+            from lib.download_client import get_version
+            self.ytdlp_version = get_version()
+            return self.ytdlp_version
         self.ytdlp_version = (
             check_output([self.youtubedl_path, "--version"]).strip().decode("utf8")
         )
         return self.ytdlp_version
 
     def upgrade_ytdlp(self):
+        if DOCKER_MODE:
+            from lib.download_client import upgrade
+            logging.info("Upgrading yt_dlp via download service...")
+            result = upgrade()
+            if result:
+                self.ytdlp_version = result.get("version", "unknown")
+                logging.info("Done. New version: %s" % self.ytdlp_version)
+            return
         logging.info(
             "Upgrading yt_dlp, current version: %s" % self.ytdlp_version
         )
@@ -261,27 +224,27 @@ class Karaoke:
         return not len(self.ip) < 7
 
     def generate_qr_code(self):
+        if DOCKER_MODE:
+            self.qr_code_path = None
+            return
         logging.debug("Generating URL QR code")
         qr = qrcode.QRCode(
             version=1,
             box_size=1,
             border=4,
         )
-        qr.add_data(self.url)
+        ws_url = "http://myvikaraoke.local"
+        qr.add_data(ws_url)
         qr.make()
         img = qr.make_image()
         self.qr_code_path = os.path.join(self.base_path, "qrcode.png")
         img.save(self.qr_code_path)
 
     def get_default_display_mode(self):
-        if self.use_vlc:
-            if self.platform == "raspberry_pi":
-                os.environ[
-                    "SDL_VIDEO_CENTERED"
-                ] = "1"  # HACK apparently if display mode is fullscreen the vlc window will be at the bottom of pygame
-                return pygame.NOFRAME
-            else:
-                return pygame.FULLSCREEN
+        if self.platform in ("raspberry_pi", "linux"):
+            # NOFRAME + explicit position avoids fullscreen issues on Pi (both 32 and 64-bit)
+            os.environ["SDL_VIDEO_WINDOW_POS"] = "0,0"
+            return pygame.NOFRAME
         else:
             return pygame.FULLSCREEN
 
@@ -294,9 +257,11 @@ class Karaoke:
             pygame.font.init()
             pygame.mouse.set_visible(0)
             self.font = pygame.font.SysFont(pygame.font.get_default_font(), 40)
-            self.width = pygame.display.Info().current_w
-            self.height = pygame.display.Info().current_h
-            logging.debug("Initializing screen mode")
+            # Read desktop resolution after display init, before set_mode
+            info = pygame.display.Info()
+            self.width = info.current_w
+            self.height = info.current_h
+            logging.debug("Initializing screen mode (%dx%d)" % (self.width, self.height))
 
             if self.platform == "windows":
                 self.screen = pygame.display.set_mode(
@@ -318,6 +283,9 @@ class Karaoke:
                     self.screen = pygame.display.set_mode(
                         [self.width, self.height], self.get_default_display_mode()
                     )
+                    # Tell the WM to raise this window above the taskbar (desktop fullscreen)
+                    if self.platform in ("raspberry_pi", "linux"):
+                        pygame.display.toggle_fullscreen()
                     alarm(0)
                 except Alarm:
                     raise KeyboardInterrupt
@@ -339,19 +307,28 @@ class Karaoke:
 
     def render_splash_screen(self):
         if not self.hide_splash_screen:
+            # Pygame display ops are not thread-safe; skip when called from Flask threads
+            if threading.current_thread() is not threading.main_thread():
+                return
             logging.debug("Rendering splash screen")
 
             self.screen.fill((0, 0, 0))
 
-            logo = pygame.image.load(self.logo_path)
+            # Cache images to avoid disk reads every frame
+            if self._cached_logo is None:
+                self._cached_logo = pygame.image.load(self.logo_path)
+            if self._cached_qr is None:
+                self._cached_qr = pygame.transform.scale(
+                    pygame.image.load(self.qr_code_path), (150, 150)
+                )
+
+            logo = self._cached_logo
             logo_rect = logo.get_rect(center=self.screen.get_rect().center)
             self.screen.blit(logo, logo_rect)
 
             blitY = self.screen.get_rect().bottomleft[1] - 40
 
-            #if not self.hide_ip:
-            p_image = pygame.image.load(self.qr_code_path)
-            p_image = pygame.transform.scale(p_image, (150, 150))
+            p_image = self._cached_qr
             self.screen.blit(p_image, (20, blitY - 125))
             if not self.is_network_connected():
                 text = self.font.render(
@@ -368,37 +345,39 @@ class Karaoke:
             else:
                 if not self.hide_ip:
                     text = self.font.render(
-                        "Connect at: " + self.url, True, (255, 255, 255)
+                        "Connect at: http://myvikaraoke.local", True, (255, 255, 255)
                     )
                 else:
                     text = self.font.render("", True, (255, 255, 255))
                 self.screen.blit(text, (p_image.get_width() + 35, blitY))
 
-            if not self.hide_raspiwifi_instructions and (
-                self.raspi_wifi_config_installed
-                and self.raspi_wifi_config_ip in self.url
-            ):
-                (server_port, ssid_prefix, ssl_enabled) = self.get_raspi_wifi_conf_vals()
+            self.render_queue_overlay()
+            pygame.display.update()
 
-                text1 = self.font.render(
-                    "RaspiWifiConfig setup mode detected!", True, (255, 255, 255)
-                )
-                text2 = self.font.render(
-                    "Connect another device/smartphone to the Wifi AP: '%s'" % ssid_prefix,
-                    True,
-                    (255, 255, 255),
-                )
-                text3 = self.font.render(
-                    "Then point its browser to: '%s://%s%s' and follow the instructions."
-                    % ("https" if ssl_enabled == "1" else "http", 
-                       self.raspi_wifi_config_ip, 
-                       ":%s" % server_port if server_port != "80" else ""),
-                    True,
-                    (255, 255, 255),
-                )
-                self.screen.blit(text1, (10, 10))
-                self.screen.blit(text2, (10, 50))
-                self.screen.blit(text3, (10, 90))
+    def _render_song_item(self, title, user, x, y, color=(220, 220, 220),
+                          prefix="", font_size=24, show_user=True):
+        """Shared helper to render a song item on the pygame screen.
+
+        Used by both render_queue_overlay() and render_next_song_to_splash_screen()
+        to keep the display format consistent and maintained in one place.
+        Returns the y position after the rendered item.
+        """
+        font_item = pygame.font.SysFont(pygame.font.get_default_font(), font_size)
+        font_small = pygame.font.SysFont(pygame.font.get_default_font(), max(font_size - 4, 14))
+        max_title_len = 38 if font_size <= 24 else 50
+
+        display_title = title
+        if len(display_title) > max_title_len:
+            display_title = display_title[:max_title_len] + "..."
+        label = prefix + display_title if prefix else display_title
+        title_surface = font_item.render(label, True, color)
+        self.screen.blit(title_surface, (x, y))
+        y += font_item.get_linesize()
+        if show_user and user:
+            user_surface = font_small.render("   " + user, True, (140, 140, 140))
+            self.screen.blit(user_surface, (x, y))
+            y += font_small.get_linesize() + 4
+        return y
 
     def render_next_song_to_splash_screen(self):
         if not self.hide_splash_screen:
@@ -406,25 +385,30 @@ class Karaoke:
             if len(self.queue) >= 1:
                 logging.debug("Rendering next song to splash screen")
                 next_song = self.queue[0]["title"]
-                max_length = 60
-                if (len(next_song) > max_length):
-                    next_song = next_song[0:max_length] + "..."
                 next_user = self.queue[0]["user"]
-                font_next_song = pygame.font.SysFont(pygame.font.get_default_font(), 60)
-                # MSG: Up next song
+
+                font_header = pygame.font.SysFont(pygame.font.get_default_font(), 44)
                 up_next_txt = self._("Up next")
-                text = font_next_song.render(
-                    f'{up_next_txt}: {unidecode(next_song)}', True, COLORS['green']
-                )
-                up_next = font_next_song.render(f"{up_next_txt}:  " , True, COLORS['blue'])
-                font_user_name = pygame.font.SysFont(pygame.font.get_default_font(), 50)
-                add_by_txt = self._("Added by")
-                user_name = font_user_name.render(f"{add_by_txt}: {next_user} ", True, COLORS['white'])
-                x = self.width - text.get_width() - 10
-                y = 5
-                self.screen.blit(text, (x, y))
-                self.screen.blit(up_next, (x, y))
-                self.screen.blit(user_name, (self.width - user_name.get_width() - 10, y + 50))
+
+                # Render header + song using shared helper, right-aligned
+                header = font_header.render(up_next_txt, True, COLORS['blue'])
+                header_x = self.width - header.get_width() - 20
+                self.screen.blit(header, (header_x, 8))
+
+                # Song title and user below the header, right-aligned
+                font_song = pygame.font.SysFont(pygame.font.get_default_font(), 36)
+                max_len = 50
+                display_title = next_song if len(next_song) <= max_len else next_song[:max_len] + "..."
+                title_surface = font_song.render(display_title, True, COLORS['green'])
+                title_x = self.width - title_surface.get_width() - 20
+                self.screen.blit(title_surface, (title_x, 55))
+
+                font_user = pygame.font.SysFont(pygame.font.get_default_font(), 28)
+                user_surface = font_user.render(next_user, True, COLORS['white'])
+                user_x = self.width - user_surface.get_width() - 20
+                self.screen.blit(user_surface, (user_x, 95))
+
+                pygame.display.update()
                 return True
             else:
                 logging.debug("Could not render next song to splash. No song in queue")
@@ -484,18 +468,37 @@ class Karaoke:
         return rc
 
     def get_available_songs(self):
-        logging.info("Fetching available songs in: " + self.download_path)
+        db_path = os.path.join(self.download_path, 'karaoke.db')
+        if not os.path.exists(db_path):
+            logging.warning("karaoke.db not found at %s, falling back to filesystem scan" % db_path)
+            self._get_available_songs_from_fs()
+            return
+        try:
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT filepath FROM songs ORDER BY lower(clean_filename)"
+            ).fetchall()
+            conn.close()
+            self.available_songs = [r["filepath"] for r in rows]
+            logging.info(f"Loaded {len(self.available_songs)} songs from karaoke.db")
+        except Exception as e:
+            logging.error(f"get_available_songs DB error: {e}")
+            self._get_available_songs_from_fs()
+
+    def _get_available_songs_from_fs(self):
+        logging.info("Fetching available songs from filesystem: " + self.download_path)
         types = ['.mp4', '.mp3', '.zip', '.mkv', '.avi', '.webm', '.mov']
         files_grabbed = []
-        P=Path(self.download_path)
+        P = Path(self.download_path)
         for file in P.rglob('*.*'):
             base, ext = os.path.splitext(file.as_posix())
             if ext.lower() in types:
                 if os.path.isfile(file.as_posix()):
-                    logging.debug("adding song: " + file.name)
                     files_grabbed.append(file.as_posix())
-
         self.available_songs = sorted(files_grabbed, key=lambda f: str.lower(os.path.basename(f)))
+        logging.info(f"Loaded {len(self.available_songs)} songs from filesystem")
 
     def delete(self, song_path):
         logging.info("Deleting song: " + song_path)
@@ -542,52 +545,90 @@ class Karaoke:
             return None
 
     def kill_player(self):
-        if self.use_vlc:
-            logging.debug("Killing old VLC processes")
-            if self.vlcclient != None:
-                self.vlcclient.kill()
-        else:
-            if self.omxclient != None:
-                self.omxclient.kill()
+        logging.debug("Killing old VLC processes")
+        if self.vlcclient != None:
+            self.vlcclient.kill()
 
-    def play_file(self, file_path, semitones=0):
+    def play_file(self, file_path, semitones=0, seek_to=None):
         self.now_playing = self.filename_from_path(file_path)
         self.now_playing_filename = file_path
 
-        if self.use_vlc:
-            logging.info("Playing video in VLC: " + self.now_playing)
-            if semitones == 0:
-                self.vlcclient.play_file(file_path)
-            else:
-                self.vlcclient.play_file_transpose(file_path, semitones)
+        logging.info("Playing video in VLC: " + self.now_playing)
+        if semitones == 0:
+            self.vlcclient.play_file(file_path)
         else:
-            logging.info("Playing video in omxplayer: " + self.now_playing)
-            self.omxclient.play_file(file_path)
+            self.vlcclient.play_file_transpose(file_path, semitones, seek_to=seek_to)
 
         self.is_paused = False
         self.render_splash_screen()  # remove old previous track
 
-    def transpose_current(self, semitones):
-        if self.use_vlc:
-            logging.info("Transposing song by %s semitones" % semitones)
-            self.now_playing_transpose = semitones
-            self.play_file(self.now_playing_filename, semitones)
+    def play_transposed_file(self, transposed_path, original_path, semitones, seek_to=0.0):
+        """Play a pre-processed transposed file at a given position.
+
+        Used when a cached transposed version already exists on disk,
+        so no ffmpeg processing is needed — just swap the VLC playback.
+        Handles .zip CDG files by extracting them first.
+        """
+        logging.info(
+            "Playing cached transpose (%+d) at %.1fs: %s"
+            % (semitones, seek_to, transposed_path)
+        )
+        self.now_playing = self.filename_from_path(original_path)
+        self.now_playing_filename = original_path
+        self.now_playing_transpose = semitones
+
+        # Prevent main loop from detecting brief VLC downtime as "song ended"
+        self.vlcclient.is_transposing = True
+
+        self.vlcclient.kill()
+        if self.vlcclient.process:
+            try:
+                self.vlcclient.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
+        time.sleep(0.3)
+
+        # process_file handles .zip extraction, .mp3+.cdg pairing, etc.
+        resolved_path = self.vlcclient.process_file(transposed_path)
+
+        command = self.vlcclient.cmd_base + [
+            "--start-time", "%.1f" % seek_to, resolved_path
+        ]
+        self.vlcclient.process = subprocess.Popen(
+            command,
+            shell=(self.vlcclient.platform == "windows"),
+            stdin=subprocess.PIPE,
+        )
+        self.is_paused = False
+
+        # Clear transposing flag after new VLC process is stable
+        timer = threading.Timer(2.0, self.vlcclient.set_transposing_complete)
+        timer.daemon = True
+        timer.start()
+
+    def transpose_current(self, semitones, from_beginning=False):
+        semitones = int(semitones)
+        logging.info("Transposing song by %s semitones (from_beginning=%s)" % (semitones, from_beginning))
+        self.now_playing_transpose = semitones
+
+        # Capture playback position and duration before VLC is stopped
+        if from_beginning:
+            seek_to = 0.0
         else:
-            logging.error("Not using VLC. Can't transpose track.")
+            seek_to = self.vlcclient._get_current_time() if self.vlcclient.is_running() else 0.0
+
+        _, duration = self.get_playback_position()
+        self.vlcclient.transpose_duration = duration if duration > 0 else 1.0
+
+        threading.Thread(
+            target=self.play_file,
+            args=(self.now_playing_filename, semitones),
+            kwargs={"seek_to": seek_to},
+            daemon=True
+        ).start()
 
     def is_file_playing(self):
-        if self.use_vlc:
-            if self.vlcclient != None and self.vlcclient.is_running():
-                return True
-            else:
-                self.now_playing = None
-                return False
-        else:
-            if self.omxclient != None and self.omxclient.is_running():
-                return True
-            else:
-                self.now_playing = None
-                return False
+        return self.vlcclient is not None and self.vlcclient.is_running()
 
     def is_song_in_queue(self, song_path):
         for each in self.queue:
@@ -597,30 +638,32 @@ class Karaoke:
 
     def enqueue(self, song_path, user="Pikaraoke"):
         if (self.is_song_in_queue(song_path)):
-            logging.warn("Song is already in queue, will not add: " + song_path)   
+            logging.warning("Song is already in queue, will not add: " + song_path)
             return False
         else:
             logging.info("'%s' is adding song to queue: %s" % (user, song_path))
-            self.queue.append({"user": user, "file": song_path, "title": self.filename_from_path(song_path)})
+            title = self.filename_from_path(song_path)
+            self.queue.append({"user": user, "file": song_path, "title": title})
+            self.show_toast("%s: %s" % (user, title[:40]))
             return True
 
     def queue_add_random(self, amount):
         logging.info("Adding %d random songs to queue" % amount)
         songs = list(self.available_songs)  # make a copy
         if len(songs) == 0:
-            logging.warn("No available songs!")
+            logging.warning("No available songs!")
             return False
         i = 0
         while i < amount:
             r = random.randint(0, len(songs) - 1)
             if self.is_song_in_queue(songs[r]):
-                logging.warn("Song already in queue, trying another... " + songs[r])
+                logging.warning("Song already in queue, trying another... " + songs[r])
             else:
                 self.queue.append({"user": "Randomizer", "file": songs[r], "title": self.filename_from_path(songs[r])})
                 i += 1
             songs.pop(r)
             if len(songs) == 0:
-                logging.warn("Ran out of songs!")
+                logging.warning("Ran out of songs!")
                 return False
         return True
 
@@ -643,7 +686,7 @@ class Karaoke:
             return False
         if action == "up":
             if index < 1:
-                logging.warn("Song is up next, can't bump up in queue: " + song["file"])
+                logging.warning("Song is up next, can't bump up in queue: " + song["file"])
                 return False
             else:
                 logging.info("Bumping song up in queue: " + song["file"])
@@ -652,7 +695,7 @@ class Karaoke:
                 return True
         elif action == "down":
             if index == len(self.queue) - 1:
-                logging.warn(
+                logging.warning(
                     "Song is already last, can't bump down in queue: " + song["file"]
                 )
                 return False
@@ -672,10 +715,7 @@ class Karaoke:
     def skip(self):
         if self.is_file_playing():
             logging.info("Skipping: " + self.now_playing)
-            if self.use_vlc:
-                self.vlcclient.stop()
-            else:
-                self.omxclient.stop()
+            self.vlcclient.stop()
             self.reset_now_playing()
             return True
         else:
@@ -685,16 +725,10 @@ class Karaoke:
     def pause(self):
         if self.is_file_playing():
             logging.info("Toggling pause: " + self.now_playing)
-            if self.use_vlc:
-                if self.vlcclient.is_playing():
-                    self.vlcclient.pause()
-                else:
-                    self.vlcclient.play()
+            if self.vlcclient.is_playing():
+                self.vlcclient.pause()
             else:
-                if self.omxclient.is_playing():
-                    self.omxclient.pause()
-                else:
-                    self.omxclient.play()
+                self.vlcclient.play()
             self.is_paused = not self.is_paused
             return True
         else:
@@ -703,10 +737,7 @@ class Karaoke:
 
     def vol_up(self):
         if self.is_file_playing():
-            if self.use_vlc:
-                self.vlcclient.vol_up()
-            else:
-                self.omxclient.vol_up()
+            self.vlcclient.vol_up()
             return True
         else:
             logging.warning("Tried to volume up, but no file is playing!")
@@ -714,10 +745,7 @@ class Karaoke:
 
     def vol_down(self):
         if self.is_file_playing():
-            if self.use_vlc:
-                self.vlcclient.vol_down()
-            else:
-                self.omxclient.vol_down()
+            self.vlcclient.vol_down()
             return True
         else:
             logging.warning("Tried to volume down, but no file is playing!")
@@ -725,18 +753,176 @@ class Karaoke:
 
     def restart(self):
         if self.is_file_playing():
-            if self.use_vlc:
-                self.vlcclient.restart()
-            else:
-                self.omxclient.restart()
+            self.vlcclient.restart()
             self.is_paused = False
             return True
         else:
             logging.warning("Tried to restart, but no file is playing!")
             return False
 
+    def seek(self, seconds):
+        if self.is_file_playing():
+            self.vlcclient.seek(seconds)
+            return True
+        return False
+
+    def get_playback_position(self):
+        """Return (position, duration) in seconds, or (0, 0)."""
+        if self.is_file_playing():
+            try:
+                return self.vlcclient.get_time_and_length()
+            except Exception:
+                pass
+        return 0.0, 0.0
+
     def stop(self):
         self.running = False
+
+    def render_queue_overlay(self):
+        """Render the song queue on the left side of the splash screen.
+
+        Uses _render_song_item() for consistent formatting with the next-song screen.
+        """
+        if self.hide_splash_screen:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            return
+
+        font_title = pygame.font.SysFont(pygame.font.get_default_font(), 30)
+        font_small = pygame.font.SysFont(pygame.font.get_default_font(), 20)
+
+        x = 20
+        y = 15
+        max_y = self.height - 200  # reserve space for QR code
+
+        # Header
+        header = font_title.render("Fila", True, (255, 255, 255))
+        self.screen.blit(header, (x, y))
+        y += 40
+
+        # Now playing
+        if self.now_playing:
+            y = self._render_song_item(
+                self.now_playing, self.now_playing_user, x, y,
+                color=(34, 154, 91), prefix=u"\u25B6 ", show_user=False,
+            )
+            # Time + user on the same detail line
+            pos, dur = self.get_playback_position()
+            if dur > 0:
+                time_str = "%d:%02d / %d:%02d" % (
+                    pos // 60, pos % 60, dur // 60, dur % 60
+                )
+            else:
+                time_str = ""
+            user_str = self.now_playing_user or ""
+            info_text = font_small.render(
+                "   " + time_str + "  " + user_str, True, (180, 180, 180)
+            )
+            self.screen.blit(info_text, (x, y))
+            y += font_small.get_linesize() + 6
+
+        # Queued songs
+        for i, item in enumerate(self.queue):
+            if y > max_y:
+                remaining = len(self.queue) - i
+                more = font_small.render(
+                    "   + %d mais..." % remaining, True, (120, 120, 120)
+                )
+                self.screen.blit(more, (x, y))
+                break
+            y = self._render_song_item(
+                item["title"], item["user"], x, y,
+                prefix="%d. " % (i + 1),
+            )
+
+    def show_toast(self, text, duration=5):
+        """Queue a toast notification to appear on the TV screen."""
+        self._toasts.append({
+            "text": text,
+            "expires": time.time() + duration,
+        })
+        # Also show via VLC marquee if a song is playing
+        if self.vlcclient and self.is_file_playing():
+            try:
+                self.vlcclient.command(
+                    "marquee&val=%s" % text.replace(" ", "%20").replace("&", "%26")
+                )
+                # Auto-hide after duration (VLC marquee timeout in ms)
+                self.vlcclient.command("marquee-timeout&val=%d" % (duration * 1000))
+            except Exception as e:
+                logging.debug("VLC marquee failed: %s" % e)
+
+    def _render_toasts(self):
+        """Render active toast notifications on the pygame screen."""
+        if self.hide_splash_screen:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            return
+        now = time.time()
+        # Remove expired toasts
+        self._toasts = [t for t in self._toasts if t["expires"] > now]
+        if not self._toasts:
+            return
+        font_toast = pygame.font.SysFont(pygame.font.get_default_font(), 28)
+        y = 10
+        for toast in self._toasts:
+            # Semi-transparent background
+            text_surface = font_toast.render(toast["text"], True, (255, 255, 255))
+            tw = text_surface.get_width() + 20
+            th = text_surface.get_height() + 12
+            tx = self.width - tw - 10
+            bg = pygame.Surface((tw, th), pygame.SRCALPHA)
+            bg.fill((0, 0, 0, 180))
+            self.screen.blit(bg, (tx, y))
+            self.screen.blit(text_surface, (tx + 10, y + 6))
+            y += th + 5
+
+    def render_transpose_overlay(self):
+        """Render a 'Changing key...' overlay with progress bar on the TV."""
+        if self.hide_splash_screen:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            return
+
+        progress = self.vlcclient.transpose_progress  # 0-100
+        semitones = self.now_playing_transpose
+        song = self.now_playing or ""
+
+        self.screen.fill((0, 0, 0))
+
+        # Song title
+        title = self.font.render(song, True, (255, 255, 255))
+        title_rect = title.get_rect(centerx=self.width // 2, y=self.height // 3 - 60)
+        self.screen.blit(title, title_rect)
+
+        # Subtitle: "Changing key: +3 semitones"
+        sub_font = pygame.font.SysFont(pygame.font.get_default_font(), 36)
+        sign = "+" if semitones > 0 else ""
+        sub_text = self._("Changing key") + ": %s%d " % (sign, semitones) + self._("semitones")
+        sub = sub_font.render(sub_text, True, (255, 200, 80))
+        sub_rect = sub.get_rect(centerx=self.width // 2, y=self.height // 3)
+        self.screen.blit(sub, sub_rect)
+
+        # Progress bar
+        bar_width = self.width // 2
+        bar_height = 40
+        bar_x = (self.width - bar_width) // 2
+        bar_y = self.height // 2
+        # Gray background
+        pygame.draw.rect(self.screen, (80, 80, 80), (bar_x, bar_y, bar_width, bar_height))
+        # Green fill
+        fill_w = int(bar_width * progress / 100)
+        if fill_w > 0:
+            pygame.draw.rect(self.screen, (34, 154, 91), (bar_x, bar_y, fill_w, bar_height))
+        # White border
+        pygame.draw.rect(self.screen, (255, 255, 255), (bar_x, bar_y, bar_width, bar_height), 2)
+
+        # Percentage text
+        pct_text = self.font.render("%d%%" % progress, True, (255, 255, 255))
+        pct_rect = pct_text.get_rect(centerx=self.width // 2, y=bar_y + bar_height + 15)
+        self.screen.blit(pct_text, pct_rect)
+
+        pygame.display.update()
 
     def handle_run_loop(self):
         if self.hide_splash_screen:
@@ -744,15 +930,33 @@ class Karaoke:
         else:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    logging.warn("Window closed: Exiting pikaraoke...")
+                    logging.warning("Window closed: Exiting pikaraoke...")
                     self.running = False
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        logging.warn("ESC pressed: Exiting pikaraoke...")
+                        logging.warning("ESC pressed: Exiting pikaraoke...")
                         self.running = False
                     if event.key == pygame.K_f:
                         self.toggle_full_screen()
-            pygame.display.update()
+
+            # Show transpose progress overlay on TV when transposing
+            if self.vlcclient and self.vlcclient.is_transposing:
+                self.render_transpose_overlay()
+            else:
+                # Re-render splash when queue or now_playing changes
+                queue_snapshot = (
+                    self.now_playing,
+                    self.now_playing_user,
+                    [(q["file"], q["user"]) for q in self.queue],
+                )
+                if queue_snapshot != self._last_queue_snapshot:
+                    self._last_queue_snapshot = queue_snapshot
+                    if not self.is_file_playing():
+                        self.render_splash_screen()
+                # Render toast notifications over the current screen
+                self._render_toasts()
+                pygame.display.update()
+
             pygame.time.wait(self.loop_interval)
 
     # Use this to reset the screen in case it loses focus
@@ -763,6 +967,8 @@ class Karaoke:
         else:
             logging.debug("Resetting pygame screen...")
             pygame.display.quit()
+            self._cached_logo = None
+            self._cached_qr = None
             self.initialize_screen()
             self.render_splash_screen()
 
@@ -772,6 +978,10 @@ class Karaoke:
         self.now_playing_user = None
         self.is_paused = True
         self.now_playing_transpose = 0
+        # Ensure the transpose overlay doesn't stay stuck on screen
+        if self.vlcclient:
+            self.vlcclient.is_transposing = False
+            self.vlcclient.transpose_progress = 0
 
     def run(self):
         logging.info("Starting PiKaraoke!")
@@ -783,7 +993,7 @@ class Karaoke:
                 if len(self.queue) > 0:
                     if not self.is_file_playing():
                         self.reset_now_playing()
-                        if not pygame.display.get_active():
+                        if not self.hide_splash_screen and not pygame.display.get_active():
                             self.pygame_reset_screen()
                         self.render_next_song_to_splash_screen()
                         i = 0
@@ -793,9 +1003,9 @@ class Karaoke:
                         self.play_file(self.queue[0]["file"])
                         self.now_playing_user=self.queue[0]["user"]
                         self.queue.pop(0)
-                elif not pygame.display.get_active() and not self.is_file_playing():
+                elif not self.hide_splash_screen and not pygame.display.get_active() and not self.is_file_playing():
                     self.pygame_reset_screen()
                 self.handle_run_loop()
             except KeyboardInterrupt:
-                logging.warn("Keyboard interrupt: Exiting pikaraoke...")
+                logging.warning("Keyboard interrupt: Exiting pikaraoke...")
                 self.running = False
