@@ -4,17 +4,12 @@ read -p "This will clean a pikaraoke install to make it ready for image deployme
 if [ $REPLY = "y" ]
  then
 
-echo
-echo "*** Ensure we're on the latest master..."
-cd ~/pikaraoke
-git checkout master
-git pull
 
 echo "*** Clearing the songs dir ***"
 sudo rm -rf /usr/lib/pikaraoke
 
 echo "*** Removing WPA supplicant saved wifi settings ***"
-sudo rm -rf /etc/wpa_supplicant/wpa_supplicant.conf
+#sudo rm -rf /etc/wpa_supplicant/wpa_supplicant.conf
 
 echo "*** Double-checking /usr/share/alsa/alsa.conf"
 cat /usr/share/alsa/alsa.conf | grep "defaults.ctl.card "
