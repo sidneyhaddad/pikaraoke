@@ -1,0 +1,14 @@
+# Web container dependencies — no pygame (splash is a separate container)
+tempora==1.14.0
+jaraco.functools==2.0
+CherryPy==10.2.1
+Flask
+pillow
+qrcode
+yt_dlp
+psutil
+unidecode
+requests
+flask-paginate==2021.10.29
+Babel==2.9.1
+Flask-Babel==2.0.0

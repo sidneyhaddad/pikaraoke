@@ -1,0 +1,12 @@
+.git
+__pycache__
+*.pyc
+.pytest_cache
+tests/
+*.bak*
+.claude/
+.vscode/
+.env
+*.md
+!TRANSLATION.md
+qrcode.png
