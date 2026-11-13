@@ -203,6 +203,13 @@ EOF
         chown -R 1000:1000 "$APP_DIR"
         _fx_log "App updated with song folder scan"
     fi
+    local WS_DIR="$R/home/$PK_USER/pikaraoke-ws"
+    if [ -d "$WS_DIR" ] && [ -f "$REPO_DIR/pikaraoke-ws/server.py" ]; then
+        cp -r "$REPO_DIR/pikaraoke-ws/." "$WS_DIR/"
+        find "$WS_DIR" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+        chown -R 1000:1000 "$WS_DIR"
+        _fx_log "pikaraoke-ws updated from the repo"
+    fi
     for d in "$SONGS_DIR" "$R/mnt/pikaraoke-songs"; do
         if [ -f "$d/karaoke.db" ]; then
             rm -f "$d/karaoke.db" "$d/karaoke.db-journal" "$d/karaoke.db-wal" "$d/karaoke.db-shm"

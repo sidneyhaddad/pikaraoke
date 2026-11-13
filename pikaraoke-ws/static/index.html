@@ -1,0 +1,2724 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+  <title>MyviKaraoke</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: '#a855f7',
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Alpine.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+
+  <!-- SortableJS (drag-and-drop para playlists) -->
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+
+  <!-- SweetAlert2 -->
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.all.min.js"></script>
+  <script>
+    // Wrapper com tema escuro consistente com a UI
+    function swall(opts) {
+      return Swal.fire({
+        background: '#111827',
+        color: '#f9fafb',
+        confirmButtonColor: '#7c3aed',
+        cancelButtonColor: '#1f2937',
+        iconColor: '#a855f7',
+        customClass: {
+          popup: 'swall-popup',
+          confirmButton: 'swall-btn',
+          cancelButton: 'swall-btn',
+          input: 'swall-input',
+        },
+        ...opts,
+      })
+    }
+  </script>
+  <style>
+    .swall-popup { border: 1px solid rgba(255,255,255,0.08) !important; border-radius: 1rem !important; }
+    .swall-btn { border-radius: 0.5rem !important; padding: 0.5rem 1.25rem !important; font-size: 0.875rem !important; }
+    .swall-input { background: #1f2937 !important; color: #f9fafb !important; border: 1px solid #374151 !important; border-radius: 0.5rem !important; padding: 0.5rem 0.75rem !important; }
+    .swal2-input:focus { box-shadow: 0 0 0 2px #7c3aed !important; border-color: #7c3aed !important; }
+  </style>
+
+  <style>
+    /* Barras de visualização musical */
+    @keyframes barBounce {
+      0%, 100% { height: 4px; }
+      50% { height: 100%; }
+    }
+    .music-bar {
+      animation: barBounce 0.7s ease-in-out infinite;
+      min-height: 4px;
+    }
+    .music-bar:nth-child(1) { animation-delay: 0.00s; }
+    .music-bar:nth-child(2) { animation-delay: 0.10s; }
+    .music-bar:nth-child(3) { animation-delay: 0.20s; }
+    .music-bar:nth-child(4) { animation-delay: 0.15s; }
+    .music-bar:nth-child(5) { animation-delay: 0.05s; }
+    .music-bar:nth-child(6) { animation-delay: 0.25s; }
+    .music-bar:nth-child(7) { animation-delay: 0.12s; }
+
+    /* Transição suave para toast */
+    [x-cloak] { display: none !important; }
+
+    /* Scroll suave em listas */
+    .scroll-list { -webkit-overflow-scrolling: touch; }
+
+    /* Pulse no botão de controle ativo */
+    @keyframes glow {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0); }
+      50% { box-shadow: 0 0 0 8px rgba(168, 85, 247, 0.3); }
+    }
+    .btn-playing { animation: glow 2s ease-in-out infinite; }
+  </style>
+</head>
+
+<body
+  class="bg-gray-950 text-white min-h-screen flex flex-col"
+  x-data="pikApp()"
+  x-init="init()"
+  x-cloak
+  @song-enqueue="enqueueLocal($event.detail)"
+  @song-preview="openPreview($event.detail)"
+  @song-edit="openEditModal($event.detail)"
+  @song-delete="openDeleteModal($event.detail)"
+  @song-add-playlist="openAddToPlaylistModal($event.detail)"
+  @song-menu-open="openSongMenu($event.detail.song, $event.detail.btn)"
+>
+
+  <!-- ===== BANNER DE RECONEXÃO ===== -->
+  <div
+    x-show="!wsConnected"
+    x-transition
+    class="fixed top-0 left-0 right-0 z-50 bg-red-900/95 text-center text-sm py-2 font-medium tracking-wide"
+  >
+    ⚡ Reconectando ao servidor...
+  </div>
+
+  <!-- ===== HEADER ===== -->
+  <header class="sticky top-0 z-40 bg-gray-950/95 backdrop-blur border-b border-gray-800">
+    <!-- Marca + usuário -->
+    <div class="flex items-center justify-between px-4 pt-3 pb-1">
+      <div class="flex items-center gap-2">
+        <span class="text-purple-400 text-xl">🎤</span>
+        <span class="font-bold text-white tracking-tight">MyviKaraoke</span>
+        <!-- Indicador WS -->
+        <span
+          class="w-2 h-2 rounded-full"
+          :class="wsConnected ? 'bg-emerald-400' : 'bg-red-400'"
+        ></span>
+      </div>
+      <button
+        @click="promptUserName()"
+        class="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 rounded-full px-3 py-1 text-sm transition"
+      >
+        <span class="text-emerald-400">🎤</span>
+        <span class="max-w-[120px] truncate" x-text="userName || 'Seu nome'"></span>
+      </button>
+    </div>
+
+    <!-- Tabs de navegação -->
+    <nav class="flex border-t border-gray-800/50">
+      <template x-for="[tab, icon, label] in tabs" :key="tab">
+        <button
+          @click="switchTab(tab)"
+          class="flex-1 flex flex-col items-center py-2 text-xs font-medium transition gap-0.5"
+          :class="activeTab === tab
+            ? 'text-purple-400 border-b-2 border-purple-500'
+            : 'text-gray-500 hover:text-gray-300'"
+        >
+          <span class="text-base" x-text="icon"></span>
+          <span x-text="label"></span>
+        </button>
+      </template>
+    </nav>
+  </header>
+
+  <!-- ===== CONTEÚDO PRINCIPAL ===== -->
+  <main class="flex-1 overflow-y-auto px-3 py-4 pb-6 max-w-lg mx-auto w-full">
+
+    <!-- ==================== ABA: AGORA ==================== -->
+    <section x-show="activeTab === 'agora'" class="space-y-4">
+
+      <!-- Card "Agora Tocando" -->
+      <div class="relative rounded-2xl overflow-hidden shadow-2xl">
+        <!-- Gradiente de fundo dinâmico -->
+        <div
+          class="absolute inset-0 transition-all duration-1000"
+          :class="nowPlaying?.now_playing && !nowPlaying?.is_paused
+            ? 'bg-gradient-to-br from-purple-900 via-indigo-900 to-blue-900'
+            : 'bg-gradient-to-br from-gray-800 to-gray-900'"
+        ></div>
+
+        <div class="relative p-5 space-y-4">
+          <!-- Visualizador de música (só quando tocando) -->
+          <div
+            class="flex items-end gap-1 h-8"
+            x-show="nowPlaying?.now_playing && !nowPlaying?.is_paused"
+          >
+            <div class="music-bar w-2 bg-purple-400 rounded-sm"></div>
+            <div class="music-bar w-2 bg-purple-300 rounded-sm"></div>
+            <div class="music-bar w-2 bg-indigo-400 rounded-sm"></div>
+            <div class="music-bar w-2 bg-purple-400 rounded-sm"></div>
+            <div class="music-bar w-2 bg-blue-400 rounded-sm"></div>
+            <div class="music-bar w-2 bg-purple-300 rounded-sm"></div>
+            <div class="music-bar w-2 bg-indigo-400 rounded-sm"></div>
+          </div>
+
+          <!-- Ícone pausa -->
+          <div
+            x-show="nowPlaying?.is_paused && nowPlaying?.now_playing"
+            class="flex items-center gap-2 text-yellow-400"
+          >
+            <span>⏸</span><span class="text-sm">Pausado</span>
+          </div>
+
+          <!-- Título e cantor -->
+          <div class="text-center">
+            <p class="text-xs uppercase tracking-widest text-purple-300 mb-1">Tocando agora</p>
+            <div class="flex items-center justify-center gap-2 flex-wrap">
+              <h2
+                class="text-xl font-bold leading-tight"
+                x-text="nowPlaying?.now_playing_title || nowPlaying?.now_playing || 'Nenhuma música'"
+              ></h2>
+              <span
+                x-show="nowPlaying?.now_playing && nowPlaying?.now_playing_semitones"
+                class="text-sm font-bold px-2 py-0.5 rounded flex-shrink-0"
+                :class="nowPlaying?.now_playing_semitones > 0 ? 'bg-green-900/70 text-green-300' : 'bg-orange-900/70 text-orange-300'"
+                x-text="(nowPlaying?.now_playing_semitones > 0 ? '+' : '') + nowPlaying?.now_playing_semitones"
+              ></span>
+            </div>
+            <p
+              class="text-purple-200 mt-0.5 text-sm font-medium"
+              x-show="nowPlaying?.now_playing_artist"
+              x-text="nowPlaying?.now_playing_artist"
+            ></p>
+            <p
+              class="text-purple-300 mt-1 text-sm"
+              x-show="nowPlaying?.now_playing_user"
+              x-text="'🎤 ' + nowPlaying?.now_playing_user"
+            ></p>
+          </div>
+
+          <!-- Controles principais -->
+          <div class="flex justify-center items-center gap-5">
+            <button
+              @click="send('restart')"
+              class="w-11 h-11 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 transition text-xl"
+              title="Reiniciar"
+            >⏮</button>
+
+            <button
+              @click="send('pause')"
+              class="w-14 h-14 flex items-center justify-center rounded-full bg-purple-600 hover:bg-purple-500 transition text-2xl shadow-lg"
+              :class="nowPlaying?.now_playing && !nowPlaying?.is_paused ? 'btn-playing' : ''"
+              :title="nowPlaying?.is_paused ? 'Tocar' : 'Pausar'"
+            >
+              <span x-text="nowPlaying?.is_paused ? '▶' : '⏸'"></span>
+            </button>
+
+            <button
+              @click="confirmSkip()"
+              class="w-11 h-11 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 transition text-xl"
+              title="Pular"
+            >⏭</button>
+          </div>
+
+          <!-- Seek bar de posição -->
+          <div x-show="playDuration > 0" class="space-y-1 px-1">
+            <input
+              type="range"
+              :min="0"
+              :max="playDuration"
+              x-model.number="seekBarValue"
+              @mousedown="onSeekStart()"
+              @touchstart="onSeekStart()"
+              @mouseup="onSeekRelease()"
+              @touchend="onSeekRelease()"
+              class="w-full h-3 rounded-lg appearance-none cursor-pointer accent-purple-400"
+              style="background: linear-gradient(to right, rgb(192,132,252) var(--seek-pct, 0%), rgba(255,255,255,0.15) 0%)"
+              :style="`background: linear-gradient(to right, rgb(192,132,252) ${playDuration > 0 ? (seekBarValue/playDuration*100).toFixed(1) : 0}%, rgba(255,255,255,0.15) 0%)`"
+            />
+            <div class="flex justify-between text-xs text-gray-400 px-0.5">
+              <span x-text="fmtTime(seekBarValue)"></span>
+              <span x-text="fmtTime(playDuration)"></span>
+            </div>
+          </div>
+
+          <!-- Volume do sistema -->
+          <div class="bg-black/20 rounded-xl px-3 py-2.5 space-y-1.5">
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-gray-300">
+                <span x-text="systemVolume <= 0 ? '🔇' : systemVolume < 50 ? '🔉' : '🔊'"></span>
+                Volume
+              </span>
+              <span
+                class="font-bold tabular-nums"
+                :class="systemVolume === 0 ? 'text-gray-500' : 'text-white'"
+                x-text="systemVolume + '%'"
+              ></span>
+            </div>
+            <input
+              type="range" min="0" max="100"
+              x-model.number="systemVolume"
+              @input="onVolumeInput()"
+              class="w-full h-2 rounded-lg appearance-none cursor-pointer accent-purple-500"
+            />
+          </div>
+
+          <!-- Controle de Tom -->
+          <div class="bg-black/20 rounded-xl p-3 space-y-2">
+            <div class="flex justify-between items-center text-sm">
+              <span class="text-gray-300">Tom</span>
+              <span
+                class="font-bold px-2 py-0.5 rounded text-sm"
+                :class="transposeValue === 0 ? 'text-gray-400' : transposeValue > 0 ? 'text-emerald-400 bg-emerald-900/50' : 'text-red-400 bg-red-900/50'"
+                x-text="transposeValue > 0 ? '+' + transposeValue : (transposeValue === 0 ? '0 (original)' : String(transposeValue))"
+              ></span>
+            </div>
+            <input
+              type="range" min="-12" max="12"
+              x-model.number="transposeValue"
+              class="w-full h-2 rounded-lg appearance-none cursor-pointer accent-purple-500"
+            />
+            <!-- Checkbox reiniciar quando pronto -->
+            <label class="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                x-model="transposeAutoRestart"
+                class="w-3.5 h-3.5 rounded accent-purple-500"
+              />
+              <span>Reiniciar música quando pronto</span>
+            </label>
+            <!-- Status do VLC transpose (ffmpeg em thread no PiKaraoke) -->
+            <div x-show="vlcTransposing" x-transition class="flex items-center gap-2 text-xs text-indigo-300 pt-0.5">
+              <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+              <span>Aplicando tom no VLC...</span>
+            </div>
+            <!-- Barra de progresso do processamento -->
+            <div x-show="transposeProcessing" x-transition class="space-y-1 pt-0.5">
+              <div class="flex justify-between text-xs text-gray-400">
+                <span>⚙ Processando tom permanente...</span>
+                <span x-text="transposeProgress + '%'"></span>
+              </div>
+              <div class="w-full bg-gray-700 rounded-full h-2">
+                <div
+                  class="bg-purple-500 h-2 rounded-full transition-all duration-300"
+                  :style="`width: ${transposeProgress}%`"
+                ></div>
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <button
+                @click="transposeValue = 0; send('transpose', {semitones: 0})"
+                class="flex-1 bg-white/10 hover:bg-white/20 rounded-lg py-1.5 text-xs transition"
+              >Resetar</button>
+              <button
+                @click="send('transpose_process', {filepath: nowPlaying?.now_playing_filepath || '', semitones: transposeValue, auto_restart: transposeAutoRestart, user: userName})"
+                :disabled="transposeProcessing || !nowPlaying?.now_playing"
+                class="flex-1 rounded-lg py-1.5 text-xs font-semibold transition"
+                :class="transposeProcessing || !nowPlaying?.now_playing
+                  ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                  : 'bg-purple-600 hover:bg-purple-500 text-white'"
+              >
+                <span x-show="!transposeProcessing">Mudar Tom</span>
+                <span x-show="transposeProcessing">Processando...</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card "Próxima música" -->
+      <div
+        x-show="nowPlaying?.up_next"
+        class="bg-gray-800/80 rounded-xl p-4 border border-gray-700/50"
+      >
+        <div class="flex items-start gap-3">
+          <div class="bg-purple-900/50 rounded-lg p-2 text-purple-400 text-lg">⏭</div>
+          <div>
+            <p class="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Próxima</p>
+            <p class="font-medium" x-text="nowPlaying?.up_next"></p>
+            <span
+              class="inline-block mt-1 text-xs bg-emerald-900/60 text-emerald-300 px-2 py-0.5 rounded-full"
+              x-text="nowPlaying?.next_user"
+            ></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Estado: Idle (sem música) -->
+      <div
+        x-show="!nowPlaying?.now_playing"
+        class="text-center py-8 text-gray-500"
+      >
+        <div class="text-5xl mb-3">🎵</div>
+        <p class="text-sm">Nenhuma música tocando</p>
+        <p class="text-xs mt-1">Adicione músicas na aba <strong class="text-purple-400">Buscar</strong></p>
+      </div>
+    </section>
+
+    <!-- ==================== ABA: FILA ==================== -->
+    <section x-show="activeTab === 'fila'" class="space-y-3">
+
+      <!-- Cabeçalho com contagem -->
+      <div class="flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wide">
+          Fila de músicas
+          <span
+            class="ml-1 bg-purple-900 text-purple-300 rounded-full px-2 py-0.5 text-xs"
+            x-text="queue.length"
+          ></span>
+        </h2>
+      </div>
+
+      <!-- Lista vazia -->
+      <div
+        x-show="queue.length === 0"
+        class="text-center py-12 text-gray-600"
+      >
+        <div class="text-4xl mb-2">📭</div>
+        <p class="text-sm">Fila vazia</p>
+      </div>
+
+      <!-- Itens da fila -->
+      <template x-for="(item, idx) in queue" :key="item.file">
+        <div class="flex items-center gap-3 bg-gray-800 hover:bg-gray-750 rounded-xl px-3 py-2.5 transition border border-gray-700/30">
+          <span class="text-gray-500 text-sm font-mono w-6 text-right flex-shrink-0" x-text="idx + 1"></span>
+          <div class="flex-1 min-w-0">
+            <p class="font-medium text-sm leading-tight truncate" x-text="item.title"></p>
+            <span
+              class="inline-block mt-0.5 text-xs bg-emerald-900/60 text-emerald-300 px-1.5 py-0.5 rounded-full"
+              x-text="item.user"
+            ></span>
+          </div>
+          <div class="flex items-center gap-1 flex-shrink-0">
+            <button
+              x-show="idx > 0"
+              @click="send('queue_edit', {action: 'up', song: item.file})"
+              class="w-7 h-7 flex items-center justify-center rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-white transition text-xs"
+            >▲</button>
+            <button
+              x-show="idx < queue.length - 1"
+              @click="send('queue_edit', {action: 'down', song: item.file})"
+              class="w-7 h-7 flex items-center justify-center rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-white transition text-xs"
+            >▼</button>
+            <button
+              @click="confirmDeleteQueue(item)"
+              class="w-7 h-7 flex items-center justify-center rounded-lg bg-red-900/50 hover:bg-red-800 text-red-400 hover:text-red-200 transition text-xs"
+            >✕</button>
+          </div>
+        </div>
+      </template>
+
+      <!-- Ações da fila -->
+      <div class="flex gap-2 pt-2">
+        <button
+          @click="send('queue_add_random', {amount: 3, user: userName || 'Randomizer'})"
+          class="flex-1 flex items-center justify-center gap-1 bg-emerald-800 hover:bg-emerald-700 rounded-xl py-2.5 text-sm font-semibold transition"
+        >🎲 +3 Aleatórias</button>
+        <button
+          @click="confirmClearQueue()"
+          class="flex-1 flex items-center justify-center gap-1 bg-red-900/70 hover:bg-red-800 rounded-xl py-2.5 text-sm font-semibold transition"
+        >🗑 Limpar Fila</button>
+      </div>
+    </section>
+
+    <!-- ==================== ABA: PLAYLISTS ==================== -->
+    <section x-show="activeTab === 'playlist'" class="space-y-3">
+
+      <!-- ===== VIEW: LISTA DE PLAYLISTS ===== -->
+      <div x-show="playlistView === 'list'">
+
+        <!-- Cabeçalho -->
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wide">Playlists</h2>
+          <button
+            @click="playlistForm = {name: '', visibility: 'private'}; playlistCreateModal = {show: true}"
+            class="text-xs bg-purple-700 hover:bg-purple-600 rounded-lg px-3 py-1.5 font-semibold transition"
+            x-show="userName"
+          >+ Nova Playlist</button>
+        </div>
+
+        <!-- Lista unificada: built-ins + playlists do usuário -->
+        <div class="space-y-1">
+
+          <!-- Built-in: Histórico Karaoke -->
+          <div
+            class="flex items-center gap-2 bg-gray-800/80 hover:bg-gray-700 rounded-xl px-3 py-2.5 transition border border-gray-700/30 cursor-pointer"
+            @click="openBuiltinPlaylist('history_all')"
+          >
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium truncate">🎤 Histórico Karaoke</p>
+              <p class="text-xs text-gray-400 truncate">Todas as músicas tocadas</p>
+            </div>
+            <div class="flex items-center gap-1.5 flex-shrink-0">
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/60 text-purple-300">📋 Histórico</span>
+            </div>
+          </div>
+
+          <!-- Built-in: Meu Histórico -->
+          <div
+            class="flex items-center gap-2 bg-gray-800/80 hover:bg-gray-700 rounded-xl px-3 py-2.5 transition border border-gray-700/30 cursor-pointer"
+            @click="openBuiltinPlaylist('history_user')"
+          >
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium truncate" x-text="'👤 ' + (userName ? 'Histórico ' + userName : 'Meu Histórico')"></p>
+              <p class="text-xs text-gray-400 truncate">Suas músicas cantadas</p>
+            </div>
+            <div class="flex items-center gap-1.5 flex-shrink-0">
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-300">📋 Histórico</span>
+            </div>
+          </div>
+
+          <!-- Carregando playlists -->
+          <div x-show="playlistLoading" class="text-center py-6 text-gray-500 text-sm">
+            <span class="animate-pulse">Carregando playlists...</span>
+          </div>
+
+          <!-- Playlists do usuário -->
+          <template x-for="pl in playlistList" :key="pl.id">
+            <div class="flex items-center gap-2 bg-gray-800/80 hover:bg-gray-700 rounded-xl px-3 py-2.5 transition border border-gray-700/30">
+              <div class="flex-1 min-w-0 cursor-pointer" @click="openPlaylist(pl)">
+                <p class="text-sm font-medium truncate" x-text="pl.name"></p>
+                <p class="text-xs text-gray-400 truncate">
+                  <span x-text="pl.song_count + ' música' + (pl.song_count !== 1 ? 's' : '')"></span>
+                  <span x-show="pl.owner !== userName" x-text="' · por ' + pl.owner" class="text-gray-600"></span>
+                </p>
+              </div>
+              <div class="flex items-center gap-1 flex-shrink-0">
+                <span
+                  class="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0"
+                  :class="{
+                    'bg-gray-700 text-gray-400': pl.visibility === 'private',
+                    'bg-blue-900/60 text-blue-300': pl.visibility === 'public_play',
+                    'bg-indigo-900/60 text-indigo-300': pl.visibility === 'public_edit'
+                  }"
+                  x-text="pl.visibility === 'private' ? '🔒' : (pl.visibility === 'public_edit' ? '✏ Pública' : '👁 Pública')"
+                ></span>
+                <button
+                  x-show="pl.owner === userName"
+                  @click.stop="openPlaylistEditModal(pl)"
+                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-gray-700 hover:bg-yellow-700/60 text-gray-400 hover:text-yellow-200 transition text-xs"
+                  title="Editar playlist"
+                >✏</button>
+                <button
+                  x-show="pl.owner === userName"
+                  @click.stop="confirmDeletePlaylist(pl)"
+                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-gray-700/50 hover:bg-red-900/70 text-gray-600 hover:text-red-400 transition text-xs"
+                  title="Excluir playlist"
+                >🗑</button>
+                <button
+                  @click.stop="enqueueAllPlaylist(pl)"
+                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-emerald-900/50 hover:bg-emerald-700 text-emerald-400 hover:text-white transition text-xs"
+                  title="Tocar tudo"
+                >▶</button>
+              </div>
+            </div>
+          </template>
+
+          <!-- Estado vazio -->
+          <div x-show="!playlistLoading && playlistList.length === 0 && userName" class="text-center py-8 text-gray-600">
+            <div class="text-3xl mb-2">🎶</div>
+            <p class="text-sm">Nenhuma playlist ainda</p>
+            <p class="text-xs text-gray-700 mt-1">Crie uma com "+ Nova Playlist"</p>
+          </div>
+          <div x-show="!userName" class="text-center py-6 text-gray-600">
+            <p class="text-sm">Configure seu nome para criar playlists</p>
+            <button @click="promptUserName()" class="mt-2 text-xs bg-purple-700 hover:bg-purple-600 rounded-lg px-3 py-1.5 transition">Definir nome</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: DETALHE DA PLAYLIST ===== -->
+      <div x-show="playlistView === 'detail' && currentPlaylist">
+
+        <!-- Header -->
+        <div class="flex items-center gap-2 mb-3">
+          <button @click="backToPlaylistList()" class="text-gray-400 hover:text-white transition p-1">← Voltar</button>
+          <div class="flex-1 min-w-0">
+            <h2 class="font-bold truncate" x-text="currentPlaylist?.name"></h2>
+            <p class="text-[10px] text-gray-500" x-show="!currentPlaylist?.is_builtin" x-text="(currentPlaylist?.songs?.length || 0) + ' músicas'"></p>
+          </div>
+          <div class="flex items-center gap-1 flex-shrink-0">
+            <button
+              x-show="!currentPlaylist?.is_builtin"
+              @click="enqueueAllPlaylist(currentPlaylist)"
+              class="text-xs bg-emerald-700 hover:bg-emerald-600 rounded-lg px-2.5 py-1.5 font-semibold transition"
+            >▶ Tocar tudo</button>
+            <button
+              x-show="!currentPlaylist?.is_builtin && currentPlaylist?.owner === userName"
+              @click="openPlaylistEditModal(currentPlaylist)"
+              class="w-7 h-7 flex items-center justify-center rounded-lg bg-gray-700 hover:bg-yellow-700/60 text-gray-400 hover:text-yellow-200 transition text-xs"
+            >✏</button>
+          </div>
+        </div>
+
+        <!-- BUILT-IN: mostra histórico paginado -->
+        <template x-if="currentPlaylist?.is_builtin">
+          <div class="space-y-2">
+            <div x-show="historyLoading" class="text-center py-6 text-gray-500 text-sm">
+              <span class="animate-pulse">Carregando...</span>
+            </div>
+            <div x-show="!historyLoading && historyResults.items.length === 0" class="text-center py-8 text-gray-600">
+              <div class="text-3xl mb-2">📜</div>
+              <p class="text-sm">Nenhuma música tocou ainda</p>
+            </div>
+            <div x-show="!historyLoading && historyResults.items.length > 0" class="space-y-1">
+              <template x-for="item in (historyResults.items || [])" :key="item.ph_id">
+                <div x-data="songCard(item)" class="flex items-stretch gap-2 bg-gray-800/80 hover:bg-gray-700 rounded-xl px-3 py-2.5 transition border border-gray-700/30"></div>
+              </template>
+            </div>
+            <!-- Paginação histórico -->
+            <div x-show="historyResults.total > historyResults.per_page" class="flex items-center gap-2 pt-1">
+              <button @click="historyPage--; doHistory()" :disabled="historyPage <= 1" class="flex-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-30 rounded-xl py-2 text-sm transition">← Anterior</button>
+              <span class="text-xs text-gray-400 text-center flex-shrink-0">
+                <span x-text="historyPage"></span> / <span x-text="Math.ceil(historyResults.total / historyResults.per_page)"></span>
+              </span>
+              <button @click="historyPage++; doHistory()" :disabled="historyPage >= Math.ceil(historyResults.total / historyResults.per_page)" class="flex-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-30 rounded-xl py-2 text-sm transition">Próxima →</button>
+            </div>
+          </div>
+        </template>
+
+        <!-- USER PLAYLIST: SortableJS -->
+        <template x-if="!currentPlaylist?.is_builtin">
+          <div>
+            <div x-show="playlistSongsLoading" class="text-center py-6 text-gray-500 text-sm">
+              <span class="animate-pulse">Carregando músicas...</span>
+            </div>
+            <div x-show="!playlistSongsLoading && (currentPlaylist?.songs || []).length === 0" class="text-center py-8 text-gray-600">
+              <div class="text-3xl mb-2">🎵</div>
+              <p class="text-sm">Playlist vazia</p>
+              <p class="text-xs text-gray-700 mt-1">Use o botão 🎵 nas músicas para adicionar</p>
+            </div>
+            <div id="playlist-songs-list" class="space-y-1">
+              <template x-for="(song, idx) in (currentPlaylist?.songs || [])" :key="song.filepath">
+                <div
+                  class="flex items-stretch gap-1.5 bg-gray-800/80 rounded-xl px-2 py-2 border border-gray-700/30"
+                  :data-filepath="song.filepath"
+                >
+                  <!-- Drag handle (só se pode editar) -->
+                  <div
+                    x-show="canEditCurrentPlaylist()"
+                    class="drag-handle cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-400 px-1 flex-shrink-0 select-none text-base flex items-center"
+                  >☰</div>
+
+                  <!-- Card padrão com contexto de playlist -->
+                  <div
+                    x-data="songCard({...song, id: song.song_id, _inPlaylist: true, _semitones: song.semitones})"
+                    class="flex items-stretch gap-2 flex-1 min-w-0"
+                  ></div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
+      </div>
+    </section>
+
+    <!-- ==================== ABA: BUSCAR ==================== -->
+    <section x-show="activeTab === 'buscar'" class="space-y-5">
+
+      <!-- SEÇÃO: Busca local -->
+      <div class="space-y-2">
+        <div class="space-y-2">
+          <h3 class="text-xs font-semibold uppercase tracking-widest text-gray-400">📀 Biblioteca local</h3>
+          <!-- Filtros em linha única -->
+          <div class="flex items-center gap-2">
+            <!-- Tipo de busca -->
+            <div class="flex flex-1 rounded-lg overflow-hidden border border-gray-700 text-xs font-semibold">
+              <button
+                @click="searchType = 'title'; if (searchQuery.length >= 2) onLocalSearch()"
+                :class="searchType === 'title' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'"
+                class="flex-1 py-2 transition"
+              >Música</button>
+              <button
+                @click="searchType = 'artist'; if (searchQuery.length >= 2) onLocalSearch()"
+                :class="searchType === 'artist' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'"
+                class="flex-1 py-2 transition border-x border-gray-700"
+              >Cantor</button>
+              <button
+                @click="searchType = 'both'; if (searchQuery.length >= 2) onLocalSearch()"
+                :class="searchType === 'both' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'"
+                class="flex-1 py-2 transition"
+              >Tudo</button>
+            </div>
+            <!-- Filtro vocal -->
+            <button
+              @click="vocalOnly = !vocalOnly; if (searchQuery.length >= 2) onLocalSearch()"
+              :class="vocalOnly ? 'bg-blue-600 text-white border-blue-500' : 'bg-gray-800 text-gray-400 hover:text-white border-gray-700'"
+              class="flex items-center gap-1 px-3 py-2 rounded-lg border text-xs font-semibold transition flex-shrink-0"
+            >🎤 Vocal</button>
+          </div>
+        </div>
+        <div class="relative">
+          <input
+            type="search"
+            x-model="searchQuery"
+            @input.debounce.400ms="onLocalSearch()"
+            @keydown.escape="searchQuery = ''; searchResults = []"
+            :placeholder="searchType === 'artist' ? 'Nome do cantor...' : searchType === 'both' ? 'Música ou cantor...' : 'Nome da música...'"
+            class="w-full bg-gray-800 border border-gray-700 focus:border-purple-500 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none transition"
+          />
+          <span x-show="searchQuery" class="absolute right-3 top-3 text-gray-500 text-sm" x-text="searchResults.length + ' resultados'"></span>
+        </div>
+
+        <!-- Resultados locais -->
+        <div
+          x-show="searchResults.length > 0"
+          class="space-y-1 max-h-72 overflow-y-auto scroll-list rounded-xl"
+        >
+          <template x-for="s in searchResults" :key="s.id">
+            <div x-data="songCard(s)" class="flex items-stretch gap-2 bg-gray-800/80 hover:bg-gray-700 rounded-xl px-3 py-2.5 transition border border-gray-700/30"></div>
+          </template>
+        </div>
+
+        <!-- Sem resultados -->
+        <p
+          x-show="searchQuery.length >= 2 && searchResults.length === 0 && !searchLoading"
+          class="text-gray-500 text-sm text-center py-4"
+        >Nenhuma música encontrada para "<span x-text="searchQuery"></span>"</p>
+      </div>
+
+      <hr class="border-gray-800"/>
+
+      <!-- SEÇÃO: Downloads ativos -->
+      <div x-show="Object.keys(downloads).length > 0" class="space-y-2">
+        <h3 class="text-xs font-semibold uppercase tracking-widest text-gray-400">
+          ⬇ Downloads
+        </h3>
+        <template x-for="(dl, id) in downloads" :key="id">
+          <div
+            class="bg-gray-800 rounded-xl p-3 border"
+            :class="{
+              'border-emerald-700/50': dl.status === 'complete',
+              'border-red-700/50': dl.status === 'error',
+              'border-purple-700/30': dl.status === 'downloading'
+            }"
+          >
+            <div class="flex justify-between items-start mb-2">
+              <p class="text-sm font-medium truncate flex-1 mr-2" x-text="dl.title"></p>
+              <span
+                class="text-xs font-bold flex-shrink-0 tabular-nums"
+                :class="{
+                  'text-emerald-400': dl.status === 'complete',
+                  'text-red-400': dl.status === 'error',
+                  'text-purple-400': dl.status === 'downloading'
+                }"
+                x-text="dl.status === 'complete' ? '✓ Completo' : (dl.status === 'error' ? '✗ Erro' : Math.floor(dl.percent) + '%')"
+              ></span>
+            </div>
+            <div class="w-full bg-gray-700 rounded-full h-1.5 overflow-hidden">
+              <div
+                class="h-1.5 rounded-full transition-all duration-300"
+                :class="dl.status === 'error' ? 'bg-red-500' : (dl.status === 'complete' ? 'bg-emerald-500' : 'bg-purple-500')"
+                :style="`width: ${dl.status === 'complete' ? 100 : dl.percent}%`"
+              ></div>
+            </div>
+            <div class="mt-1 text-xs"
+                 :class="dl.status === 'complete' ? 'text-emerald-400' : dl.status === 'error' ? 'text-red-400' : 'text-gray-500'">
+              <span x-show="dl.status === 'complete'">✓ Adicionado à fila!</span>
+              <span x-show="dl.status === 'error'" x-text="dl.error || 'Falha no download'"></span>
+              <span x-show="dl.status === 'downloading' && dl.speed" x-text="dl.speed + ' · ETA ' + dl.eta"></span>
+              <span x-show="dl.status === 'downloading' && !dl.speed">Iniciando...</span>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <hr x-show="Object.keys(downloads).length > 0" class="border-gray-800"/>
+
+      <!-- SEÇÃO: YouTube -->
+      <div class="space-y-3">
+        <h3 class="text-xs font-semibold uppercase tracking-widest text-gray-400">
+          ▶ Baixar do YouTube
+        </h3>
+        <div class="flex gap-2">
+          <input
+            type="search"
+            x-model="ytQuery"
+            @keydown.enter="doYtSearch()"
+            placeholder="Nome da música..."
+            class="flex-1 bg-gray-800 border border-gray-700 focus:border-purple-500 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none transition"
+          />
+          <button
+            @click="doYtSearch()"
+            :disabled="ytSearching || !ytQuery.trim()"
+            class="bg-red-700 hover:bg-red-600 disabled:opacity-50 rounded-xl px-4 py-2 font-semibold text-sm transition flex-shrink-0"
+          >
+            <span x-show="!ytSearching">Buscar</span>
+            <span x-show="ytSearching" class="animate-pulse">...</span>
+          </button>
+        </div>
+
+        <!-- Buscando -->
+        <div x-show="ytSearching" class="text-center py-6">
+          <div class="inline-flex items-center gap-2 text-gray-400">
+            <span class="animate-spin text-lg">⟳</span>
+            <span class="text-sm">Buscando no YouTube...</span>
+          </div>
+        </div>
+
+        <!-- Resultados YouTube -->
+        <div x-show="ytResults.length > 0 && !ytSearching" class="space-y-2">
+          <template x-for="v in ytResults" :key="v.id">
+            <div class="flex gap-3 bg-gray-800 rounded-xl p-2.5 border border-gray-700/30">
+              <div class="relative flex-shrink-0">
+                <img
+                  :src="v.thumbnail"
+                  class="w-20 h-14 object-cover rounded-lg bg-gray-700"
+                  onerror="this.style.display='none'"
+                />
+                <span
+                  x-show="v.duration"
+                  class="absolute bottom-1 right-1 text-xs bg-black/80 px-1 rounded"
+                  x-text="formatDuration(v.duration)"
+                ></span>
+              </div>
+              <div class="flex-1 min-w-0 flex flex-col justify-between">
+                <p class="text-sm font-medium leading-snug line-clamp-2" x-text="v.title"></p>
+                <button
+                  @click="downloadYt(v)"
+                  class="mt-1.5 self-start text-xs bg-purple-700 hover:bg-purple-600 rounded-lg px-2.5 py-1 font-semibold transition"
+                >⬇ Baixar e adicionar</button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ==================== ABA: MÚSICAS ==================== -->
+    <section x-show="activeTab === 'musicas'" class="space-y-3">
+
+      <!-- Barra de letras A-Z -->
+      <div class="flex flex-wrap gap-1">
+        <button
+          @click="browseByLetter(null)"
+          :class="browseLetter === null ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'"
+          class="px-2 py-1 rounded-lg text-xs font-mono transition"
+        >Todas</button>
+        <button
+          @click="browseByLetter('numeric')"
+          :class="browseLetter === 'numeric' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'"
+          class="px-2 py-1 rounded-lg text-xs font-mono transition"
+        >#</button>
+        <template x-for="l in alphabet" :key="l">
+          <button
+            @click="browseByLetter(l)"
+            :class="browseLetter === l ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'"
+            class="px-2 py-1 rounded-lg text-xs font-mono uppercase transition"
+            x-text="l"
+          ></button>
+        </template>
+      </div>
+
+      <!-- Linha: contagem + ordenação -->
+      <div class="flex items-center justify-between text-sm">
+        <span class="text-gray-400 text-xs">
+          <span x-text="browseResults.total.toLocaleString('pt-BR')"></span> músicas
+        </span>
+        <div class="flex gap-3">
+          <button
+            @click="browseSort = 'title'; doBrowse()"
+            :class="browseSort === 'title' ? 'text-purple-400 font-semibold' : 'text-gray-500 hover:text-gray-300'"
+            class="text-xs transition"
+          >Por Música</button>
+          <button
+            @click="browseSort = 'artist'; doBrowse()"
+            :class="browseSort === 'artist' ? 'text-purple-400 font-semibold' : 'text-gray-500 hover:text-gray-300'"
+            class="text-xs transition"
+          >Por Cantor</button>
+        </div>
+      </div>
+
+      <!-- Carregando -->
+      <div x-show="browseLoading" class="text-center py-8 text-gray-500 text-sm">
+        <span class="animate-pulse">Carregando músicas...</span>
+      </div>
+
+      <!-- Lista de músicas -->
+      <div
+        x-show="!browseLoading && browseResults.songs.length > 0"
+        class="space-y-1 scroll-list"
+      >
+        <template x-for="s in browseResults.songs" :key="s.id">
+          <div x-data="songCard(s)" class="flex items-stretch gap-2 bg-gray-800/80 hover:bg-gray-700 rounded-xl px-3 py-2 transition border border-gray-700/30"></div>
+        </template>
+      </div>
+
+      <!-- Paginação -->
+      <div
+        x-show="browseResults.total > browseResults.per_page"
+        class="flex items-center gap-2 pt-1"
+      >
+        <button
+          @click="browsePage--; doBrowse()"
+          :disabled="browsePage <= 1"
+          class="flex-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-30 rounded-xl py-2 text-sm transition"
+        >← Anterior</button>
+        <span class="text-xs text-gray-400 text-center flex-shrink-0">
+          <span x-text="browsePage"></span> / <span x-text="Math.ceil(browseResults.total / browseResults.per_page)"></span>
+        </span>
+        <button
+          @click="browsePage++; doBrowse()"
+          :disabled="browsePage >= Math.ceil(browseResults.total / browseResults.per_page)"
+          class="flex-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-30 rounded-xl py-2 text-sm transition"
+        >Próxima →</button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ===== TOAST ===== -->
+  <div
+    x-show="toast.show"
+    x-transition:enter="transition ease-out duration-200"
+    x-transition:enter-start="opacity-0 translate-y-4"
+    x-transition:enter-end="opacity-100 translate-y-0"
+    x-transition:leave="transition ease-in duration-200"
+    x-transition:leave-start="opacity-100 translate-y-0"
+    x-transition:leave-end="opacity-0 translate-y-4"
+    class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 rounded-2xl px-5 py-3 text-sm font-medium shadow-xl text-center max-w-[85vw]"
+    :class="{
+      'bg-emerald-800 text-emerald-100': toast.type === 'success',
+      'bg-red-800 text-red-100': toast.type === 'error',
+      'bg-yellow-800 text-yellow-100': toast.type === 'warning',
+      'bg-blue-800 text-blue-100': toast.type === 'info'
+    }"
+    x-text="toast.msg"
+  ></div>
+
+
+  <!-- ===== MODAL PREVIEW DE ÁUDIO ===== -->
+  <div
+    x-show="previewModal.show"
+    x-transition:enter="transition ease-out duration-200"
+    x-transition:enter-start="opacity-0 translate-y-4"
+    x-transition:enter-end="opacity-100 translate-y-0"
+    x-transition:leave="transition ease-in duration-150"
+    x-transition:leave-start="opacity-100 translate-y-0"
+    x-transition:leave-end="opacity-0 translate-y-4"
+    @keydown.escape.window="closePreview()"
+    class="fixed inset-0 z-50 flex items-end justify-center bg-black/70"
+    @click.self="closePreview()"
+  >
+    <div class="w-full max-w-lg bg-gray-900 rounded-t-2xl p-4 pb-8 space-y-3 shadow-2xl">
+      <!-- Info da música -->
+      <div class="flex items-start justify-between gap-2">
+        <div class="flex-1 min-w-0">
+          <p class="font-semibold truncate" x-text="previewModal.song?.title || previewModal.song?.clean_filename || ''"></p>
+          <p class="text-sm text-gray-400 truncate" x-text="previewModal.song?.artist || ''"></p>
+          <p class="text-xs text-gray-600 truncate" x-show="previewModal.song?.publisher" x-text="previewModal.song?.publisher || ''"></p>
+        </div>
+        <button @click="closePreview()" class="text-gray-400 hover:text-white text-2xl leading-none flex-shrink-0">×</button>
+      </div>
+      <!-- Player de áudio -->
+      <audio
+        id="preview-audio"
+        controls
+        :src="previewModal.url"
+        class="w-full rounded-lg"
+        @ended="closePreview()"
+      ></audio>
+      <!-- Botão para adicionar à fila -->
+      <button
+        @click="$dispatch('song-enqueue', previewModal.song); closePreview()"
+        class="w-full bg-emerald-700 hover:bg-emerald-600 rounded-xl py-2.5 text-sm font-semibold transition"
+      >+ Adicionar à fila</button>
+    </div>
+  </div>
+
+
+  <!-- ===== MODAL EXCLUIR MÚSICA ===== -->
+  <div
+    x-show="deleteModal.show"
+    x-transition:enter="transition ease-out duration-150"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition ease-in duration-100"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-50 flex items-end justify-center p-4 bg-black/80"
+    @click.self="deleteModal = { show: false, song: null }"
+  >
+    <div
+      x-show="deleteModal.show"
+      x-transition:enter="transition ease-out duration-200"
+      x-transition:enter-start="opacity-0 translate-y-4"
+      x-transition:enter-end="opacity-100 translate-y-0"
+      class="bg-gray-900 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl border border-red-900/50 mb-2"
+    >
+      <!-- Ícone + título -->
+      <div class="flex items-start gap-3">
+        <div class="w-10 h-10 rounded-full bg-red-900/40 flex items-center justify-center flex-shrink-0 text-xl">🗑</div>
+        <div>
+          <h3 class="font-bold text-base text-red-400">Excluir música?</h3>
+          <p class="text-xs text-gray-500 mt-0.5">Esta ação não pode ser desfeita</p>
+        </div>
+      </div>
+
+      <!-- Nome da música -->
+      <div class="bg-gray-800/60 rounded-xl px-3 py-2.5 border border-gray-700/50">
+        <p class="text-sm font-medium truncate" x-text="deleteModal.song?.title || deleteModal.song?.clean_filename || ''"></p>
+        <p class="text-xs text-gray-400 truncate mt-0.5" x-text="deleteModal.song?.artist || ''"></p>
+      </div>
+
+      <!-- Aviso -->
+      <div class="bg-red-950/40 border border-red-900/40 rounded-xl px-3 py-2.5 space-y-1">
+        <p class="text-xs font-semibold text-red-400">⚠ Atenção — leia antes de confirmar:</p>
+        <p class="text-xs text-gray-400 leading-relaxed">
+          A música será <strong class="text-white">removida do sistema permanentemente</strong> e
+          <strong class="text-white">ninguém mais poderá cantá-la</strong>.<br><br>
+          Use esta opção <strong class="text-yellow-400">apenas para músicas com qualidade ruim, defeito de áudio ou letra incorreta</strong>.
+          O arquivo será movido para uma pasta de backup.
+        </p>
+      </div>
+
+      <!-- Botões -->
+      <div class="flex gap-2 pt-1">
+        <button
+          @click="deleteModal = { show: false, song: null }"
+          class="flex-1 bg-gray-700 hover:bg-gray-600 rounded-xl py-2.5 text-sm font-medium transition"
+        >Cancelar</button>
+        <button
+          @click="confirmDelete()"
+          class="flex-1 bg-red-700 hover:bg-red-600 active:bg-red-800 rounded-xl py-2.5 text-sm font-bold transition text-white"
+        >Confirmar exclusão</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL EDITAR MÚSICA ===== -->
+  <div
+    x-show="editModal.show"
+    x-transition:enter="transition ease-out duration-150"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition ease-in duration-150"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70"
+    @click.self="closeEditModal()"
+  >
+    <div
+      x-show="editModal.show"
+      x-transition:enter="transition ease-out duration-150"
+      x-transition:enter-start="opacity-0 scale-95"
+      x-transition:enter-end="opacity-100 scale-100"
+      class="bg-gray-900 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl border border-gray-700"
+    >
+      <div class="flex justify-between items-center">
+        <h3 class="font-bold text-lg">Editar música</h3>
+        <button @click="closeEditModal()" class="text-gray-400 hover:text-white text-2xl leading-none w-8 h-8 flex items-center justify-center">&times;</button>
+      </div>
+
+      <p class="text-xs text-gray-500 truncate -mt-2" x-text="editModal.song?.clean_filename"></p>
+
+      <div class="space-y-3">
+        <div class="relative">
+          <label class="text-xs text-gray-400 font-medium">Artista</label>
+          <input
+            x-model="editForm.artist"
+            @input.debounce.300ms="onArtistInput()"
+            @keydown.enter="saveEdit()"
+            @keydown.escape="showArtistSuggestions = false"
+            @blur="setTimeout(() => showArtistSuggestions = false, 150)"
+            autocomplete="off"
+            class="w-full mt-1 bg-gray-800 border border-gray-700 focus:border-purple-500 rounded-lg px-3 py-2 text-sm text-white focus:outline-none transition"
+          />
+          <!-- Dropdown de sugestões -->
+          <ul
+            x-show="showArtistSuggestions && artistSuggestions.length > 0"
+            class="absolute z-10 left-0 right-0 mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden"
+          >
+            <template x-for="name in artistSuggestions" :key="name">
+              <li
+                @mousedown.prevent="selectArtist(name)"
+                class="px-3 py-2 text-sm cursor-pointer hover:bg-purple-700/50 transition truncate"
+                x-text="name"
+              ></li>
+            </template>
+          </ul>
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 font-medium">Título</label>
+          <input
+            x-model="editForm.title"
+            @keydown.enter="saveEdit()"
+            class="w-full mt-1 bg-gray-800 border border-gray-700 focus:border-purple-500 rounded-lg px-3 py-2 text-sm text-white focus:outline-none transition"
+          />
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 font-medium">Tom <span class="text-gray-600">(ex: C, F#, Bb, Am)</span></label>
+          <input
+            x-model="editForm.musical_key"
+            @keydown.enter="saveEdit()"
+            class="w-full mt-1 bg-gray-800 border border-gray-700 focus:border-purple-500 rounded-lg px-3 py-2 text-sm text-white focus:outline-none transition"
+          />
+        </div>
+        <div class="flex items-center justify-between">
+          <label class="text-xs text-gray-400 font-medium">Tem vocais</label>
+          <button
+            @click="editForm.has_vocals = editForm.has_vocals ? 0 : 1"
+            class="px-4 py-1.5 rounded-lg text-xs font-semibold transition"
+            :class="editForm.has_vocals ? 'bg-emerald-700 text-white' : 'bg-gray-700 text-gray-400'"
+          >
+            <span x-text="editForm.has_vocals ? 'Sim' : 'Não'"></span>
+          </button>
+        </div>
+      </div>
+
+      <div class="flex gap-2 pt-1">
+        <button
+          @click="closeEditModal()"
+          class="flex-1 bg-gray-700 hover:bg-gray-600 rounded-xl py-2.5 text-sm transition"
+        >Cancelar</button>
+        <button
+          @click="saveEdit()"
+          class="flex-1 bg-purple-600 hover:bg-purple-500 rounded-xl py-2.5 text-sm font-semibold transition"
+        >Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL NOME DO USUÁRIO ===== -->
+  <div
+    x-show="userNameModal.show"
+    x-transition:enter="transition ease-out duration-150"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition ease-in duration-100"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70"
+    @click.self="cancelUserName()"
+    @keydown.escape.window="userNameModal.show && cancelUserName()"
+  >
+    <div
+      x-show="userNameModal.show"
+      x-transition:enter="transition ease-out duration-150"
+      x-transition:enter-start="opacity-0 scale-95"
+      x-transition:enter-end="opacity-100 scale-100"
+      class="bg-gray-900 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl border border-gray-700"
+    >
+      <div class="flex justify-between items-center">
+        <h3 class="font-bold text-lg">Seu nome</h3>
+        <button @click="cancelUserName()" class="text-gray-400 hover:text-white text-2xl leading-none w-8 h-8 flex items-center justify-center">&times;</button>
+      </div>
+      <p class="text-xs text-gray-500 -mt-2">Como você aparecerá no histórico e nas playlists</p>
+      <div class="relative">
+        <input
+          id="userNameInput"
+          x-model="userNameInput"
+          @input="onUserNameInput()"
+          @keydown.enter="confirmUserName()"
+          @keydown.escape="cancelUserName()"
+          @blur="setTimeout(() => showUserNameSuggestions = false, 150)"
+          placeholder="Digite seu nome..."
+          autocomplete="off"
+          class="w-full bg-gray-800 border border-gray-700 focus:border-purple-500 rounded-xl px-4 py-3 text-sm text-white focus:outline-none transition"
+        />
+        <!-- Dropdown sugestões -->
+        <ul
+          x-show="showUserNameSuggestions && userNameSuggestions.length > 0"
+          class="absolute z-10 left-0 right-0 mt-1 bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden"
+        >
+          <template x-for="sug in userNameSuggestions" :key="sug">
+            <li
+              @mousedown.prevent="selectUserName(sug)"
+              class="px-4 py-2.5 text-sm cursor-pointer hover:bg-purple-700/50 transition truncate"
+              x-text="sug"
+            ></li>
+          </template>
+        </ul>
+      </div>
+      <div class="flex gap-2 pt-1">
+        <button
+          @click="cancelUserName()"
+          class="flex-1 bg-gray-700 hover:bg-gray-600 rounded-xl py-2.5 text-sm transition"
+        >Cancelar</button>
+        <button
+          @click="confirmUserName()"
+          :disabled="!userNameInput.trim()"
+          class="flex-1 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl py-2.5 text-sm font-semibold transition"
+        >Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL CRIAR PLAYLIST ===== -->
+  <div
+    x-show="playlistCreateModal.show"
+    x-transition:enter="transition ease-out duration-150"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition ease-in duration-100"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70"
+    @click.self="playlistCreateModal.show = false"
+    @keydown.escape.window="playlistCreateModal.show && (playlistCreateModal.show = false)"
+  >
+    <div
+      x-show="playlistCreateModal.show"
+      x-transition:enter="transition ease-out duration-150"
+      x-transition:enter-start="opacity-0 scale-95"
+      x-transition:enter-end="opacity-100 scale-100"
+      class="bg-gray-900 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl border border-gray-700"
+    >
+      <div class="flex justify-between items-center">
+        <h3 class="font-bold text-lg">Nova playlist</h3>
+        <button @click="playlistCreateModal.show = false" class="text-gray-400 hover:text-white text-2xl leading-none w-8 h-8 flex items-center justify-center">&times;</button>
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 font-medium">Nome</label>
+        <input
+          x-model="playlistForm.name"
+          @keydown.enter="createPlaylist()"
+          placeholder="Nome da playlist..."
+          class="w-full mt-1 bg-gray-800 border border-gray-700 focus:border-purple-500 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none transition"
+        />
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 font-medium block mb-2">Visibilidade</label>
+        <div class="space-y-2">
+          <div class="flex items-center gap-3 p-3 rounded-xl cursor-pointer transition"
+               :class="playlistForm.visibility === 'private' ? 'bg-purple-900/40 border border-purple-700/60' : 'bg-gray-800/60 border border-gray-700/50 hover:border-gray-600'"
+               @click="playlistForm.visibility = 'private'">
+            <span class="text-lg">🔒</span>
+            <div>
+              <p class="text-sm font-medium">Privada</p>
+              <p class="text-xs text-gray-400">Só você vê</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 p-3 rounded-xl cursor-pointer transition"
+               :class="playlistForm.visibility === 'public_play' ? 'bg-purple-900/40 border border-purple-700/60' : 'bg-gray-800/60 border border-gray-700/50 hover:border-gray-600'"
+               @click="playlistForm.visibility = 'public_play'">
+            <span class="text-lg">👁</span>
+            <div>
+              <p class="text-sm font-medium">Pública (ver)</p>
+              <p class="text-xs text-gray-400">Todos veem, só você edita</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 p-3 rounded-xl cursor-pointer transition"
+               :class="playlistForm.visibility === 'public_edit' ? 'bg-purple-900/40 border border-purple-700/60' : 'bg-gray-800/60 border border-gray-700/50 hover:border-gray-600'"
+               @click="playlistForm.visibility = 'public_edit'">
+            <span class="text-lg">✏️</span>
+            <div>
+              <p class="text-sm font-medium">Pública (editar)</p>
+              <p class="text-xs text-gray-400">Todos veem e adicionam músicas</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="flex gap-2 pt-1">
+        <button
+          @click="playlistCreateModal.show = false"
+          class="flex-1 bg-gray-700 hover:bg-gray-600 rounded-xl py-2.5 text-sm transition"
+        >Cancelar</button>
+        <button
+          @click="createPlaylist()"
+          :disabled="!playlistForm.name.trim()"
+          class="flex-1 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl py-2.5 text-sm font-semibold transition"
+        >Criar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL EDITAR PLAYLIST ===== -->
+  <div
+    x-show="playlistEditModal.show"
+    x-transition:enter="transition ease-out duration-150"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition ease-in duration-100"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70"
+    @click.self="playlistEditModal = { show: false, playlist: null }"
+    @keydown.escape.window="playlistEditModal.show && (playlistEditModal = { show: false, playlist: null })"
+  >
+    <div
+      x-show="playlistEditModal.show"
+      x-transition:enter="transition ease-out duration-150"
+      x-transition:enter-start="opacity-0 scale-95"
+      x-transition:enter-end="opacity-100 scale-100"
+      class="bg-gray-900 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl border border-gray-700"
+    >
+      <div class="flex justify-between items-center">
+        <h3 class="font-bold text-lg">Editar playlist</h3>
+        <button @click="playlistEditModal = { show: false, playlist: null }" class="text-gray-400 hover:text-white text-2xl leading-none w-8 h-8 flex items-center justify-center">&times;</button>
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 font-medium">Nome</label>
+        <input
+          x-model="playlistForm.name"
+          @keydown.enter="savePlaylistEdit()"
+          class="w-full mt-1 bg-gray-800 border border-gray-700 focus:border-purple-500 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none transition"
+        />
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 font-medium block mb-2">Visibilidade</label>
+        <div class="space-y-2">
+          <div class="flex items-center gap-3 p-3 rounded-xl cursor-pointer transition"
+               :class="playlistForm.visibility === 'private' ? 'bg-purple-900/40 border border-purple-700/60' : 'bg-gray-800/60 border border-gray-700/50 hover:border-gray-600'"
+               @click="playlistForm.visibility = 'private'">
+            <span class="text-lg">🔒</span>
+            <div>
+              <p class="text-sm font-medium">Privada</p>
+              <p class="text-xs text-gray-400">Só você vê</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 p-3 rounded-xl cursor-pointer transition"
+               :class="playlistForm.visibility === 'public_play' ? 'bg-purple-900/40 border border-purple-700/60' : 'bg-gray-800/60 border border-gray-700/50 hover:border-gray-600'"
+               @click="playlistForm.visibility = 'public_play'">
+            <span class="text-lg">👁</span>
+            <div>
+              <p class="text-sm font-medium">Pública (ver)</p>
+              <p class="text-xs text-gray-400">Todos veem, só você edita</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 p-3 rounded-xl cursor-pointer transition"
+               :class="playlistForm.visibility === 'public_edit' ? 'bg-purple-900/40 border border-purple-700/60' : 'bg-gray-800/60 border border-gray-700/50 hover:border-gray-600'"
+               @click="playlistForm.visibility = 'public_edit'">
+            <span class="text-lg">✏️</span>
+            <div>
+              <p class="text-sm font-medium">Pública (editar)</p>
+              <p class="text-xs text-gray-400">Todos veem e adicionam músicas</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="flex gap-2 pt-1">
+        <button
+          @click="playlistEditModal = { show: false, playlist: null }"
+          class="flex-1 bg-gray-700 hover:bg-gray-600 rounded-xl py-2.5 text-sm transition"
+        >Cancelar</button>
+        <button
+          @click="savePlaylistEdit()"
+          :disabled="!playlistForm.name.trim()"
+          class="flex-1 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl py-2.5 text-sm font-semibold transition"
+        >Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL ADICIONAR À PLAYLIST ===== -->
+  <div
+    x-show="addToPlaylistModal.show"
+    x-transition:enter="transition ease-out duration-150"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition ease-in duration-100"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-50 flex items-end justify-center p-4 bg-black/80"
+    @click.self="addToPlaylistModal = { show: false, song: null }"
+  >
+    <div
+      x-show="addToPlaylistModal.show"
+      x-transition:enter="transition ease-out duration-200"
+      x-transition:enter-start="opacity-0 translate-y-4"
+      x-transition:enter-end="opacity-100 translate-y-0"
+      class="bg-gray-900 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl border border-gray-700/60 mb-2"
+    >
+      <!-- Header -->
+      <div class="flex justify-between items-center">
+        <div class="min-w-0 flex-1">
+          <h3 class="font-bold text-base">Adicionar à playlist</h3>
+          <p class="text-xs text-gray-400 truncate mt-0.5" x-text="addToPlaylistModal.song?.title || addToPlaylistModal.song?.clean_filename || ''"></p>
+        </div>
+        <button @click="addToPlaylistModal = { show: false, song: null }" class="text-gray-400 hover:text-white text-2xl leading-none w-8 h-8 flex items-center justify-center flex-shrink-0 ml-2">&times;</button>
+      </div>
+
+      <!-- Lista de playlists editáveis -->
+      <div class="space-y-1.5 max-h-60 overflow-y-auto pr-0.5">
+        <template x-if="addToPlaylistList.length === 0">
+          <p class="text-sm text-gray-500 text-center py-4">Nenhuma playlist. Crie uma abaixo.</p>
+        </template>
+        <template x-for="pl in addToPlaylistList" :key="pl.id">
+          <button
+            @click="addSongToPlaylist(pl)"
+            class="w-full flex items-center gap-3 p-3 rounded-xl bg-gray-800/60 hover:bg-purple-900/40 border border-gray-700/50 hover:border-purple-700/60 transition text-left"
+          >
+            <span class="text-base flex-shrink-0" x-text="pl.visibility === 'private' ? '🔒' : pl.visibility === 'public_play' ? '👁' : '✏️'"></span>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium truncate" x-text="pl.name"></p>
+              <p class="text-xs text-gray-400" x-text="(pl.song_count || 0) + ' música' + ((pl.song_count || 0) !== 1 ? 's' : '')"></p>
+            </div>
+            <span class="text-purple-400 text-lg flex-shrink-0">+</span>
+          </button>
+        </template>
+      </div>
+
+      <!-- Botão nova playlist -->
+      <button
+        @click="openCreatePlaylistFromModal()"
+        class="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-gray-600 hover:border-purple-500 text-gray-400 hover:text-purple-300 text-sm transition"
+      >
+        <span>+</span>
+        <span>Nova playlist</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ===== ALPINE.JS APP ===== -->
+  <script>
+    function pikApp() {
+      return {
+        // ---- Conexão ----
+        ws: null,
+        wsConnected: false,
+        reconnectTimer: null,
+
+        // ---- Usuário ----
+        userName: '',
+
+        // ---- Estado do servidor ----
+        nowPlaying: null,
+        queue: [],
+
+        // ---- Navegação ----
+        activeTab: 'agora',
+        tabs: [
+          ['agora', '🎵', 'Agora'],
+          ['fila', '📋', 'Fila'],
+          ['playlist', '🎶', 'Playlists'],
+          ['buscar', '🔍', 'Buscar'],
+          ['musicas', '🎼', 'Músicas'],
+        ],
+
+        // ---- Toast ----
+        toast: { show: false, msg: '', type: 'success' },
+
+        // ---- Menu global de música ----
+        songMenu: { open: false, song: null, top: 0, right: 0 },
+
+        // ---- Modal de seleção de tom ----
+        toneModal: { open: false, song: null, semitones: 0, context: 'queue' },
+
+        // ---- Busca local ----
+        searchType: 'title',
+        vocalOnly: false,
+        searchQuery: '',
+        searchResults: [],
+        searchLoading: false,
+
+        // ---- YouTube ----
+        ytQuery: '',
+        ytResults: [],
+        ytSearching: false,
+
+        // ---- Downloads ----
+        downloads: {},
+        _downloadTimers: {},
+
+        // ---- Browse ----
+        alphabet: 'abcdefghijklmnopqrstuvwxyz'.split(''),
+        browseLetter: null,
+        browseSort: 'title',
+        browsePage: 1,
+        browseResults: { total: 0, page: 1, per_page: 100, songs: [] },
+        browseLoading: false,
+
+        // ---- Histórico ----
+        historyResults: { total: 0, page: 1, per_page: 50, items: [] },
+        historyPage: 1,
+        historyLoading: false,
+        historyMode: 'all',  // 'all' ou 'user'
+
+        // ---- Volume ----
+        systemVolume: 50,
+        _volTimer: null,
+
+        // ---- Tom ----
+        transposeValue: 0,
+        transposeProcessing: false,
+        transposeProgress: 0,
+        transposeJobId: null,
+        transposeAutoRestart: false,
+        vlcTransposing: false,
+        _transposeTimeout: null,
+
+        // ---- Seek bar ----
+        playPosition: 0,
+        playDuration: 0,
+        seekBarValue: 0,
+        seekDragging: false,
+
+        // ---- Cache timestamps ----
+        _historyFetchedAt: 0,
+
+        // ---- Modal de edição ----
+        editModal: { show: false, song: null },
+        deleteModal: { show: false, song: null },
+        editForm: { artist: '', title: '', musical_key: '', has_vocals: 0 },
+        artistSuggestions: [],
+        showArtistSuggestions: false,
+
+        // ---- Playlists ----
+        playlistView: 'list',       // 'list' | 'detail'
+        playlistList: [],
+        playlistLoading: false,
+        currentPlaylist: null,      // { id, name, owner, visibility, songs: [], is_builtin }
+        playlistSongsLoading: false,
+        playlistCreateModal: { show: false },
+        playlistEditModal: { show: false, playlist: null },
+        playlistForm: { name: '', visibility: 'private' },
+        addToPlaylistModal: { show: false, song: null },
+        addToPlaylistList: [],
+        _sortableInstance: null,
+
+        // ---- Preview de áudio ----
+        previewModal: { show: false, song: null, url: null },
+
+        // ---- Modal nome do usuário ----
+        userNameModal: { show: false },
+        userNameInput: '',
+        userNameSuggestions: [],
+        showUserNameSuggestions: false,
+        _userNameDebounce: null,
+
+        // ================================================================
+        // INIT
+        // ================================================================
+        init() {
+          this.userName = localStorage.getItem('pk_user') || '';
+          if (!this.userName) {
+            this.$nextTick(() => this.promptUserName());
+          }
+          this.connectWS();
+          // Timer local para avançar a seek bar suavemente entre polls
+          setInterval(() => {
+            if (!this.seekDragging && this.nowPlaying?.now_playing && !this.nowPlaying?.is_paused) {
+              if (this.playDuration > 0 && this.playPosition < this.playDuration) {
+                this.playPosition = Math.min(this.playPosition + 1, this.playDuration);
+                this.seekBarValue = this.playPosition;
+              }
+            }
+          }, 1000);
+        },
+
+        promptUserName() {
+          this.userNameInput = this.userName || '';
+          this.userNameSuggestions = [];
+          this.showUserNameSuggestions = false;
+          this.userNameModal = { show: true };
+          this.$nextTick(() => {
+            const el = document.getElementById('username-input');
+            if (el) el.focus();
+          });
+        },
+
+        onUserNameInput() {
+          clearTimeout(this._userNameDebounce);
+          const q = this.userNameInput.trim();
+          if (q.length >= 1) {
+            this._userNameDebounce = setTimeout(() => {
+              this.send('suggest_users', { q });
+            }, 300);
+          } else {
+            this.userNameSuggestions = [];
+            this.showUserNameSuggestions = false;
+          }
+        },
+
+        selectUserName(name) {
+          this.userNameInput = name;
+          this.userNameSuggestions = [];
+          this.showUserNameSuggestions = false;
+          this.confirmUserName();
+        },
+
+        confirmUserName() {
+          const name = this.userNameInput.trim();
+          if (name) {
+            this.userName = name;
+            localStorage.setItem('pk_user', this.userName);
+          }
+          this.userNameModal = { show: false };
+          this.userNameSuggestions = [];
+          this.showUserNameSuggestions = false;
+        },
+
+        cancelUserName() {
+          this.userNameModal = { show: false };
+          this.userNameSuggestions = [];
+          this.showUserNameSuggestions = false;
+        },
+
+        switchTab(tab) {
+          this.activeTab = tab;
+          if (tab === 'musicas' && this.browseResults.songs.length === 0) {
+            this.doBrowse();
+          }
+          if (tab === 'playlist') {
+            this.loadPlaylists();
+          }
+        },
+
+        // ================================================================
+        // WEBSOCKET
+        // ================================================================
+        connectWS() {
+          const wsUrl = `ws://${location.host}/ws`;
+          try {
+            this.ws = new WebSocket(wsUrl);
+          } catch (e) {
+            this.scheduleReconnect();
+            return;
+          }
+
+          this.ws.onopen = () => {
+            this.wsConnected = true;
+            clearTimeout(this.reconnectTimer);
+            // Prefetch em background — dados prontos antes do usuário trocar de aba
+            setTimeout(() => {
+              if (this.browseResults.songs.length === 0) this.doBrowse();
+              if (this.historyResults.items.length === 0) this.doHistory();
+            }, 600);
+          };
+
+          this.ws.onmessage = (event) => {
+            try {
+              const msg = JSON.parse(event.data);
+              this.handleMessage(msg);
+            } catch (e) {
+              console.error('WS parse error:', e);
+            }
+          };
+
+          this.ws.onclose = () => {
+            this.wsConnected = false;
+            this.scheduleReconnect();
+          };
+
+          this.ws.onerror = () => {
+            this.ws.close();
+          };
+        },
+
+        scheduleReconnect() {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = setTimeout(() => this.connectWS(), 2000);
+        },
+
+        send(cmd, payload = {}) {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ cmd, payload }));
+          }
+        },
+
+        // ================================================================
+        // MENSAGENS DO SERVIDOR
+        // ================================================================
+        handleMessage(msg) {
+          switch (msg.type) {
+            case 'full_state':
+              this.nowPlaying = msg.payload.now_playing || null;
+              this.queue = msg.payload.queue || [];
+              if (msg.payload.system_volume !== undefined) this.systemVolume = msg.payload.system_volume;
+              if (this.nowPlaying) {
+                this.transposeValue = this.nowPlaying.now_playing_semitones || this.nowPlaying.transpose_value || 0;
+                this._syncSeek(this.nowPlaying);
+              }
+              // Restaura job de transposição em andamento (reconexão/reload)
+              if (msg.payload.transpose_job_id) {
+                this.transposeJobId = msg.payload.transpose_job_id;
+                this.transposeProcessing = true;
+              } else {
+                // Nenhum job ativo no servidor — garante que o botão não fique travado
+                this.transposeProcessing = false;
+                this.transposeJobId = null;
+                this.transposeProgress = 0;
+              }
+              // Restaura downloads ativos (persistência entre reloads)
+              if (msg.payload.downloads) {
+                for (const [dl_id, dl] of Object.entries(msg.payload.downloads)) {
+                  if (!this.downloads[dl_id]) {
+                    this.downloads[dl_id] = {
+                      title: dl.title || dl.url || '',
+                      percent: dl.percent || 0,
+                      status: dl.status || 'downloading',
+                      speed: dl.speed || '',
+                      eta: dl.eta || '',
+                      error: dl.error || '',
+                    };
+                    if (dl.status === 'complete') {
+                      clearTimeout(this._downloadTimers[dl_id]);
+                      this._downloadTimers[dl_id] = setTimeout(() => { delete this.downloads[dl_id]; }, 4000);
+                    }
+                  }
+                }
+              }
+              break;
+
+            case 'now_playing':
+              this.nowPlaying = msg.payload;
+              if (msg.payload) {
+                if (!msg.payload.now_playing) {
+                  this.transposeValue = 0;
+                } else {
+                  this.transposeValue = msg.payload.now_playing_semitones || msg.payload.transpose_value || 0;
+                }
+                this._syncSeek(msg.payload);
+              }
+              break;
+
+            case 'semitone_changed':
+              if (this.nowPlaying) {
+                this.nowPlaying = { ...this.nowPlaying, now_playing_semitones: msg.payload.semitones };
+              }
+              this.transposeValue = msg.payload.semitones;
+              break;
+
+            case 'queue_updated':
+              this.queue = msg.payload || [];
+              break;
+
+            case 'download_started':
+              this.downloads[msg.payload.id] = {
+                title: msg.payload.title || msg.payload.url,
+                percent: 0,
+                status: 'downloading',
+                speed: '',
+                eta: '',
+                error: '',
+              };
+              // Limpa resultados e vai para aba buscar para mostrar o progresso
+              this.ytResults = [];
+              this.ytQuery = '';
+              this.searchResults = [];
+              this.searchQuery = '';
+              this.activeTab = 'buscar';
+              break;
+
+            case 'download_progress':
+              if (this.downloads[msg.payload.id]) {
+                this.downloads[msg.payload.id].percent = msg.payload.percent || 0;
+                this.downloads[msg.payload.id].speed = msg.payload.speed || '';
+                this.downloads[msg.payload.id].eta = msg.payload.eta || '';
+              }
+              break;
+
+            case 'download_complete':
+              if (this.downloads[msg.payload.id]) {
+                this.downloads[msg.payload.id].status = 'complete';
+                this.downloads[msg.payload.id].percent = 100;
+              }
+              // Remove automaticamente 4s após completar (música já está na fila)
+              clearTimeout(this._downloadTimers[msg.payload.id]);
+              this._downloadTimers[msg.payload.id] = setTimeout(() => {
+                delete this.downloads[msg.payload.id];
+              }, 4000);
+              break;
+
+            case 'download_error':
+              if (this.downloads[msg.payload.id]) {
+                this.downloads[msg.payload.id].status = 'error';
+                this.downloads[msg.payload.id].error = msg.payload.error || 'Falha no download';
+              }
+              clearTimeout(this._downloadTimers[msg.payload.id]);
+              this._downloadTimers[msg.payload.id] = setTimeout(() => {
+                delete this.downloads[msg.payload.id];
+              }, 6000);
+              break;
+
+            case 'search_results':
+              this.searchResults = msg.payload.results || [];
+              this.searchLoading = false;
+              break;
+
+            case 'browse_results':
+              this.browseResults = msg.payload;
+              this.browseLoading = false;
+              break;
+
+            case 'youtube_results':
+              this.ytResults = msg.payload.results || [];
+              this.ytSearching = false;
+              break;
+
+            case 'enqueue_result':
+              Alpine.store('pending').unmark(msg.payload.filepath || msg.payload.song);
+              if (msg.payload.success) {
+                const st = msg.payload.semitones_hint || 0;
+                const stLabel = st !== 0 ? ` · tom ${st > 0 ? '+' : ''}${st}` : '';
+                this.showToast(`✓ Adicionado: ${msg.payload.song}${stLabel}`, 'success');
+              } else {
+                this.showToast(`⚠ Já está na fila: ${msg.payload.song}`, 'warning');
+              }
+              break;
+
+            case 'artist_suggestions':
+              this.artistSuggestions = msg.payload.suggestions || [];
+              this.showArtistSuggestions = this.artistSuggestions.length > 0;
+              break;
+
+            case 'history_results':
+              this.historyResults = {
+                total: msg.payload.total || 0,
+                page: msg.payload.page || 1,
+                per_page: msg.payload.per_page || 50,
+                items: (msg.payload.items || []).map(item => ({
+                  ph_id: item.id,
+                  id: item.song_id || null,
+                  title: item.song_title || item.clean_filename || item.title || '',
+                  artist: item.artist || '',
+                  filepath: item.filepath || '',
+                  clean_filename: item.clean_filename || '',
+                  musical_key: item.musical_key || '',
+                  has_vocals: item.has_vocals || 0,
+                  last_played: item.played_at || '',
+                  play_count: item.play_count || null,
+                  ph_semitones: item.semitones || 0,
+                  ph_user: item.user || '',
+                })),
+              };
+              this.historyLoading = false;
+              break;
+
+            case 'song_edit_result':
+              if (msg.payload.success) {
+                const updated = msg.payload.song;
+                const si = this.searchResults.findIndex(s => s.id === updated.id);
+                if (si >= 0) this.searchResults[si] = { ...this.searchResults[si], ...updated };
+                const bi = this.browseResults.songs.findIndex(s => s.id === updated.id);
+                if (bi >= 0) this.browseResults.songs[bi] = { ...this.browseResults.songs[bi], ...updated };
+                this.showToast('✓ Música atualizada', 'success');
+                this.closeEditModal();
+              } else {
+                this.showToast('✗ Erro ao salvar', 'error');
+              }
+              break;
+
+            case 'delete_song_result':
+              if (msg.payload.ok) {
+                const delId = msg.payload.song_id;
+                this.searchResults = this.searchResults.filter(s => s.id !== delId);
+                this.browseResults.songs = this.browseResults.songs.filter(s => s.id !== delId);
+                this.historyResults.items = this.historyResults.items.filter(s => s.id !== delId);
+                this.browseResults.total = Math.max(0, this.browseResults.total - 1);
+                this.showToast(`✓ Música excluída: ${msg.payload.title}`, 'success');
+                this.deleteModal = { show: false, song: null };
+              } else {
+                this.showToast(`✗ Erro ao excluir: ${msg.payload.error}`, 'error');
+                this.deleteModal = { show: false, song: null };
+              }
+              break;
+
+            case 'vol_update':
+              this.systemVolume = msg.payload.percent;
+              break;
+
+            case 'seek_update':
+              this._syncSeek(msg.payload);
+              break;
+
+            case 'transpose_started':
+              this.transposeProcessing = true;
+              this.transposeProgress = 0;
+              this.transposeJobId = msg.payload.job_id;
+              this.showToast('⚙ Processando tom permanente...', 'info');
+              // Safety timeout: reset button after 3 minutes if still stuck
+              if (this._transposeTimeout) clearTimeout(this._transposeTimeout);
+              this._transposeTimeout = setTimeout(() => {
+                if (this.transposeProcessing) {
+                  this.transposeProcessing = false;
+                  this.transposeProgress = 0;
+                  this.transposeJobId = null;
+                  this.showToast('⏱ Tempo limite de transposição excedido', 'warning');
+                }
+              }, 180000);
+              break;
+
+            case 'transpose_progress':
+              // Aceita progresso se job_id bate OU se transposeProcessing já está ativo
+              // (cobre reconexão WS que perdeu o transpose_started)
+              if (msg.payload.job_id === this.transposeJobId || this.transposeProcessing) {
+                if (!this.transposeJobId) this.transposeJobId = msg.payload.job_id;
+                this.transposeProcessing = true;
+                this.transposeProgress = msg.payload.percent || 0;
+              }
+              break;
+
+            case 'transpose_done':
+              this.transposeProcessing = false;
+              this.transposeProgress = 100;
+              this.transposeJobId = null;
+              if (this._transposeTimeout) { clearTimeout(this._transposeTimeout); this._transposeTimeout = null; }
+              if (msg.payload.auto_restart) {
+                this.showToast('✓ Tom gravado! Reiniciando música...', 'success');
+              } else {
+                this.showToast('✓ Tom gravado e salvo!', 'success');
+              }
+              break;
+
+            case 'transpose_cached':
+              this.transposeProcessing = false;
+              if (this._transposeTimeout) { clearTimeout(this._transposeTimeout); this._transposeTimeout = null; }
+              if (msg.payload.auto_restart) {
+                this.showToast('⚡ Tom já gravado! Reiniciando música...', 'success');
+              } else {
+                this.showToast('⚡ Tom já estava gravado!', 'success');
+              }
+              break;
+
+            case 'transpose_error':
+              this.transposeProcessing = false;
+              this.transposeProgress = 0;
+              if (this._transposeTimeout) { clearTimeout(this._transposeTimeout); this._transposeTimeout = null; }
+              this.transposeJobId = null;
+              this.showToast(`✗ Erro ao processar tom: ${msg.payload.error}`, 'error');
+              break;
+
+            case 'vlc_transpose_started':
+              this.vlcTransposing = true;
+              break;
+
+            case 'vlc_transpose_done':
+              this.vlcTransposing = false;
+              break;
+
+            case 'user_suggestions':
+              this.userNameSuggestions = msg.payload.users || [];
+              this.showUserNameSuggestions = this.userNameSuggestions.length > 0;
+              break;
+
+            case 'playlist_list_result':
+              this.playlistList = msg.payload || [];
+              this.playlistLoading = false;
+              if (this.addToPlaylistModal.show) {
+                this.addToPlaylistList = this.editablePlaylists();
+              }
+              break;
+
+            case 'playlist_songs_result':
+              if (this.currentPlaylist) {
+                this.currentPlaylist = { ...this.currentPlaylist, songs: msg.payload.songs || [] };
+              }
+              this.playlistSongsLoading = false;
+              this.$nextTick(() => this.initSortable());
+              break;
+
+            case 'playlist_create_result':
+              if (msg.payload.success && msg.payload.playlist) {
+                this.playlistList = [msg.payload.playlist, ...this.playlistList];
+                this.showToast('✓ Playlist criada', 'success');
+                // Se veio do modal "adicionar à playlist", reabre com a lista atualizada
+                if (this.addToPlaylistModal.song) {
+                  this.addToPlaylistList = this.editablePlaylists();
+                  this.addToPlaylistModal = { ...this.addToPlaylistModal, show: true };
+                }
+              } else {
+                this.showToast('✗ Erro ao criar playlist', 'error');
+              }
+              this.playlistCreateModal = { show: false };
+              this.playlistForm = { name: '', visibility: 'private' };
+              break;
+
+            case 'playlist_add_result':
+              if (msg.payload.success) {
+                const plName = msg.payload.playlist_name || 'playlist';
+                this.showToast(`✓ Adicionado à "${plName}"`, 'success');
+                // Atualiza song_count no playlistList
+                const idx = this.playlistList.findIndex(p => p.id === msg.payload.playlist_id);
+                if (idx >= 0) this.playlistList[idx] = { ...this.playlistList[idx], song_count: (this.playlistList[idx].song_count || 0) + 1 };
+              } else {
+                this.showToast('✗ Erro ao adicionar à playlist', 'error');
+              }
+              this.addToPlaylistModal = { show: false, song: null };
+              break;
+
+            case 'playlist_remove_result':
+              if (msg.payload.success && this.currentPlaylist) {
+                this.currentPlaylist = {
+                  ...this.currentPlaylist,
+                  songs: (this.currentPlaylist.songs || []).filter(s => s.filepath !== msg.payload.filepath),
+                };
+              }
+              break;
+
+            case 'playlist_reorder_result':
+              // Atualizado localmente — sem ação necessária
+              break;
+
+            case 'playlist_update_result':
+              if (msg.payload.success && msg.payload.playlist) {
+                const updated = msg.payload.playlist;
+                const updIdx = this.playlistList.findIndex(p => p.id === updated.id);
+                if (updIdx >= 0) this.playlistList[updIdx] = updated;
+                if (this.currentPlaylist?.id === updated.id) {
+                  this.currentPlaylist = { ...this.currentPlaylist, ...updated };
+                }
+                this.showToast('✓ Playlist atualizada', 'success');
+              } else {
+                this.showToast('✗ Erro ao atualizar', 'error');
+              }
+              this.playlistEditModal = { show: false, playlist: null };
+              break;
+
+            case 'playlist_delete_result':
+              if (msg.payload.success) {
+                this.playlistList = this.playlistList.filter(p => p.id !== msg.payload.playlist_id);
+                if (this.currentPlaylist?.id === msg.payload.playlist_id) {
+                  this.playlistView = 'list';
+                  this.currentPlaylist = null;
+                }
+                this.showToast('✓ Playlist excluída', 'success');
+              } else {
+                this.showToast('✗ Sem permissão para excluir', 'error');
+              }
+              break;
+
+            case 'playlist_song_semitone_result':
+              // Atualizado localmente — sem ação necessária
+              break;
+
+            case 'error':
+              this.showToast(`Erro: ${msg.payload.msg}`, 'error');
+              break;
+          }
+        },
+
+        // ================================================================
+        // AÇÕES DO USUÁRIO
+        // ================================================================
+        _syncSeek(payload) {
+          if (!this.seekDragging) {
+            const pos = payload?.position || 0;
+            const dur = payload?.duration || 0;
+            // Sempre atualiza duração
+            this.playDuration = dur;
+            // Só corrige posição se diferença for significativa (>2s)
+            // para evitar pulos visíveis — o timer local cuida do resto
+            const drift = Math.abs(pos - this.playPosition);
+            if (drift > 2 || this.playDuration === 0 || this.playPosition === 0) {
+              this.playPosition = pos;
+              this.seekBarValue = pos;
+            }
+          }
+        },
+
+        onVolumeInput() {
+          clearTimeout(this._volTimer);
+          this._volTimer = setTimeout(() => {
+            this.send('vol_set', { percent: this.systemVolume });
+          }, 150);
+        },
+
+        onSeekStart() {
+          this.seekDragging = true;
+        },
+
+        onSeekRelease() {
+          this.seekDragging = false;
+          this.playPosition = this.seekBarValue;
+          this.send('seek', { t: this.seekBarValue });
+        },
+
+        fmtTime(s) {
+          s = Math.max(0, Math.floor(s || 0));
+          const m = Math.floor(s / 60);
+          const sec = s % 60;
+          return `${m}:${String(sec).padStart(2, '0')}`;
+        },
+
+        confirmSkip() {
+          if (!this.nowPlaying?.now_playing) return;
+          const title = this.nowPlaying.now_playing_title || this.nowPlaying.now_playing;
+          swall({
+            title: 'Pular música?',
+            text: `"${title}"`,
+            icon: 'question',
+            showCancelButton: true,
+            confirmButtonText: 'Pular ⏭',
+            cancelButtonText: 'Cancelar',
+          }).then(r => { if (r.isConfirmed) this.send('skip'); });
+        },
+
+        confirmDeleteQueue(item) {
+          swall({
+            title: 'Remover da fila?',
+            text: `"${item.title}"`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Remover',
+            cancelButtonText: 'Cancelar',
+          }).then(r => { if (r.isConfirmed) this.send('queue_edit', { action: 'delete', song: item.file }); });
+        },
+
+        confirmClearQueue() {
+          if (this.queue.length === 0) return;
+          swall({
+            title: 'Limpar fila?',
+            text: `${this.queue.length} música${this.queue.length > 1 ? 's' : ''} serão removidas`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Limpar tudo',
+            cancelButtonText: 'Cancelar',
+          }).then(r => { if (r.isConfirmed) this.send('queue_clear'); });
+        },
+
+        async switchToMyHistory() {
+          if (!this.userName) await this.promptUserName();
+          if (this.userName) { this.historyMode = 'user'; this.historyPage = 1; this.doHistory(); }
+        },
+
+        async enqueueLocal(song, semitones) {
+          if (!this.userName) {
+            await this.promptUserName();
+            if (!this.userName) return;
+          }
+          Alpine.store('pending').mark(song.filepath);
+          const payload = { filepath: song.filepath, user: this.userName };
+          if (semitones !== undefined && semitones !== null) payload.semitones = semitones;
+          this.send('enqueue', payload);
+          // Limpa busca se a ação veio da aba Buscar
+          if (this.activeTab === 'buscar') {
+            this.searchQuery = '';
+            this.searchResults = [];
+          }
+        },
+
+        // ---- Modal de tom ----
+        openToneModal(song, context) {
+          const initial = context === 'playlist' ? (song._semitones || 0) : 0;
+          this.toneModal = { open: true, song, semitones: initial, context };
+        },
+        closeToneModal() { this.toneModal.open = false; },
+        async toneModalConfirm() {
+          const { song, semitones, context } = this.toneModal;
+          this.closeToneModal();
+          if (context === 'playlist') {
+            // Atualiza semitom na playlist diretamente
+            const newSemitones = Math.max(-12, Math.min(12, semitones));
+            const songs = (this.currentPlaylist.songs || []).map(s =>
+              s.filepath === song.filepath ? { ...s, semitones: newSemitones } : s
+            );
+            this.currentPlaylist = { ...this.currentPlaylist, songs };
+            this.send('playlist_update_song_semitone', {
+              playlist_id: this.currentPlaylist.id,
+              filepath: song.filepath,
+              semitones: newSemitones,
+            });
+          } else {
+            await this.enqueueLocal(song, semitones);
+          }
+        },
+
+        openPreview(song) {
+          const audio = document.getElementById('preview-audio');
+          if (audio) { audio.pause(); audio.src = ''; }
+          this.previewModal = { show: true, song, url: `/api/preview/${song.id}` };
+          this.$nextTick(() => { document.getElementById('preview-audio')?.play().catch(() => {}); });
+        },
+
+        closePreview() {
+          const audio = document.getElementById('preview-audio');
+          if (audio) { audio.pause(); audio.src = ''; }
+          this.previewModal = { show: false, song: null, url: null };
+        },
+
+        // ---- Menu global de música ----
+        openSongMenu(song, btn) {
+          const rect = btn.getBoundingClientRect();
+          this.songMenu = {
+            open: true,
+            song,
+            top: rect.top,
+            right: window.innerWidth - rect.right,
+            btnBottom: window.innerHeight - rect.top,
+          };
+        },
+        closeSongMenu() { this.songMenu.open = false; },
+        songMenuEnqueue()         { this.enqueueLocal(this.songMenu.song);              this.closeSongMenu(); },
+        songMenuPreview()         { this.openPreview(this.songMenu.song);               this.closeSongMenu(); },
+        songMenuEdit()            { this.openEditModal(this.songMenu.song);             this.closeSongMenu(); },
+        songMenuDelete()          { this.openDeleteModal(this.songMenu.song);           this.closeSongMenu(); },
+        songMenuPlaylist()        { this.openAddToPlaylistModal(this.songMenu.song);    this.closeSongMenu(); },
+        // ---- Utilitário: transpõe tom musical N semitons ----
+        transposeKey(key, semitones) {
+          const NOTES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+          if (!key) return '';
+          const isMinor = key.endsWith('m');
+          const note = isMinor ? key.slice(0, -1) : key;
+          const idx = NOTES.indexOf(note);
+          if (idx === -1) return key;
+          const newIdx = ((idx + semitones) % 12 + 12) % 12;
+          return NOTES[newIdx] + (isMinor ? 'm' : '');
+        },
+
+        songMenuChangeTone() {
+          const ctx = this.songMenu.song?._inPlaylist ? 'playlist' : 'queue';
+          this.openToneModal(this.songMenu.song, ctx);
+          this.closeSongMenu();
+        },
+        songMenuRemoveFromPlaylist() { this.removeFromPlaylist(this.songMenu.song); this.closeSongMenu(); },
+
+        openDeleteModal(song) {
+          this.deleteModal = { show: true, song };
+        },
+
+        confirmDelete() {
+          if (!this.deleteModal.song?.id) return;
+          this.send('delete_song', { id: this.deleteModal.song.id });
+        },
+
+        openEditModal(song) {
+          this.editModal = { show: true, song };
+          this.editForm = {
+            artist: song.artist || '',
+            title: song.title || '',
+            musical_key: song.musical_key || '',
+            has_vocals: song.has_vocals || 0,
+          };
+          this.artistSuggestions = [];
+          this.showArtistSuggestions = false;
+        },
+
+        onArtistInput() {
+          const q = this.editForm.artist.trim();
+          if (q.length >= 1) {
+            this.send('suggest_artists', { q });
+          } else {
+            this.artistSuggestions = [];
+            this.showArtistSuggestions = false;
+          }
+        },
+
+        selectArtist(name) {
+          this.editForm.artist = name;
+          this.artistSuggestions = [];
+          this.showArtistSuggestions = false;
+        },
+
+        saveEdit() {
+          this.send('song_edit', { id: this.editModal.song.id, ...this.editForm });
+        },
+
+        closeEditModal() {
+          this.editModal = { show: false, song: null };
+          this.artistSuggestions = [];
+          this.showArtistSuggestions = false;
+        },
+
+        onLocalSearch() {
+          if (this.searchQuery.length >= 2) {
+            this.searchLoading = true;
+            this.send('search_local', { q: this.searchQuery, type: this.searchType, vocal_only: this.vocalOnly });
+          } else {
+            this.searchResults = [];
+            this.searchLoading = false;
+          }
+        },
+
+        doYtSearch() {
+          const q = this.ytQuery.trim();
+          if (!q) return;
+          this.ytSearching = true;
+          this.ytResults = [];
+          this.send('search_youtube', { q });
+        },
+
+        downloadYt(video) {
+          if (!this.userName) {
+            this.promptUserName();
+            if (!this.userName) return;
+          }
+          this.send('download', {
+            url: video.url,
+            user: this.userName,
+            enqueue: true,
+            title: video.title,
+          });
+        },
+
+        browseByLetter(letter) {
+          this.browseLetter = letter;
+          this.browsePage = 1;
+          this.doBrowse();
+        },
+
+        doBrowse() {
+          this.browseLoading = true;
+          this.send('browse', {
+            letter: this.browseLetter,
+            sort: this.browseSort,
+            page: this.browsePage,
+          });
+        },
+
+        doHistory() {
+          this.historyLoading = true;
+          this._historyFetchedAt = Date.now();
+          const payload = { page: this.historyPage };
+          if (this.historyMode === 'user' && this.userName) payload.user = this.userName;
+          this.send('history', payload);
+        },
+
+        // ================================================================
+        // PLAYLISTS
+        // ================================================================
+        loadPlaylists() {
+          this.playlistLoading = true;
+          this.send('playlist_list', { user: this.userName || '' });
+        },
+
+        openBuiltinPlaylist(type) {
+          this.historyMode = type === 'history_all' ? 'all' : 'user';
+          if (type === 'history_user' && !this.userName) {
+            this.promptUserName();
+            return;
+          }
+          const name = type === 'history_all' ? 'Histórico Karaoke' : `Histórico ${this.userName || 'Meu'}`;
+          this.currentPlaylist = { id: type, name, is_builtin: true, owner: '', visibility: 'public_play', songs: [] };
+          this.playlistView = 'detail';
+          this.historyPage = 1;
+          this.doHistory();
+        },
+
+        openPlaylist(pl) {
+          this.currentPlaylist = { ...pl, songs: [] };
+          this.playlistView = 'detail';
+          this.playlistSongsLoading = true;
+          this.send('playlist_songs', { playlist_id: pl.id });
+        },
+
+        backToPlaylistList() {
+          this.playlistView = 'list';
+          this.currentPlaylist = null;
+          if (this._sortableInstance) {
+            this._sortableInstance.destroy();
+            this._sortableInstance = null;
+          }
+        },
+
+        canEditCurrentPlaylist() {
+          if (!this.currentPlaylist || this.currentPlaylist.is_builtin) return false;
+          return this.currentPlaylist.owner === this.userName || this.currentPlaylist.visibility === 'public_edit';
+        },
+
+        initSortable() {
+          if (this._sortableInstance) {
+            this._sortableInstance.destroy();
+            this._sortableInstance = null;
+          }
+          if (!this.canEditCurrentPlaylist()) return;
+          const el = document.getElementById('playlist-songs-list');
+          if (!el || typeof Sortable === 'undefined') return;
+          const self = this;
+          this._sortableInstance = new Sortable(el, {
+            animation: 150,
+            handle: '.drag-handle',
+            onEnd(evt) {
+              const songs = [...(self.currentPlaylist.songs || [])];
+              const moved = songs.splice(evt.oldIndex, 1)[0];
+              songs.splice(evt.newIndex, 0, moved);
+              self.currentPlaylist = { ...self.currentPlaylist, songs };
+              self.send('playlist_reorder', {
+                playlist_id: self.currentPlaylist.id,
+                order: songs.map(s => s.filepath),
+              });
+            },
+          });
+        },
+
+        enqueueAllPlaylist(pl) {
+          if (!this.userName) { this.promptUserName(); return; }
+          if (pl.is_builtin) { this.showToast('Use o botão + em cada música', 'info'); return; }
+          this.send('playlist_enqueue_all', { playlist_id: pl.id, user: this.userName });
+          this.showToast('▶ Adicionando todas à fila...', 'info');
+        },
+
+        removeFromPlaylist(song) {
+          if (!this.currentPlaylist) return;
+          this.send('playlist_remove_song', { playlist_id: this.currentPlaylist.id, filepath: song.filepath });
+        },
+
+        changeSongSemitone(song, delta) {
+          const newSemitones = Math.max(-12, Math.min(12, (song.semitones || 0) + delta));
+          // Atualiza localmente
+          const songs = (this.currentPlaylist.songs || []).map(s =>
+            s.filepath === song.filepath ? { ...s, semitones: newSemitones } : s
+          );
+          this.currentPlaylist = { ...this.currentPlaylist, songs };
+          this.send('playlist_update_song_semitone', {
+            playlist_id: this.currentPlaylist.id,
+            filepath: song.filepath,
+            semitones: newSemitones,
+          });
+        },
+
+        openPlaylistEditModal(pl) {
+          this.playlistForm = { name: pl.name, visibility: pl.visibility || 'private' };
+          this.playlistEditModal = { show: true, playlist: pl };
+        },
+
+        savePlaylistEdit() {
+          if (!this.playlistForm.name.trim()) return;
+          this.send('playlist_update', {
+            playlist_id: this.playlistEditModal.playlist.id,
+            name: this.playlistForm.name.trim(),
+            visibility: this.playlistForm.visibility,
+            user: this.userName,
+          });
+        },
+
+        confirmDeletePlaylist(pl) {
+          swall({
+            title: 'Excluir playlist?',
+            text: `"${pl.name}" será excluída permanentemente`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Excluir',
+            cancelButtonText: 'Cancelar',
+          }).then(r => {
+            if (r.isConfirmed) {
+              this.send('playlist_delete', { playlist_id: pl.id, user: this.userName });
+            }
+          });
+        },
+
+        openAddToPlaylistModal(song) {
+          this.addToPlaylistModal = { show: true, song };
+          // Atualiza lista de playlists editáveis
+          if (this.playlistList.length === 0) {
+            this.send('playlist_list', { user: this.userName || '' });
+          } else {
+            this.addToPlaylistList = this.editablePlaylists();
+          }
+        },
+
+        addSongToPlaylist(pl) {
+          const song = this.addToPlaylistModal.song;
+          if (!song) return;
+          this.send('playlist_add_song', {
+            playlist_id: pl.id,
+            filepath: song.filepath,
+            semitones: this.transposeValue || 0,
+          });
+          // A resposta vem em 'playlist_add_result'
+        },
+
+        editablePlaylists() {
+          return (this.playlistList || []).filter(pl =>
+            pl.owner === this.userName || pl.visibility === 'public_edit'
+          );
+        },
+
+        enqueueFromPlaylist(song) {
+          if (!this.userName) { this.promptUserName(); return; }
+          Alpine.store('pending').mark(song.filepath);
+          this.send('enqueue', { filepath: song.filepath, user: this.userName });
+        },
+
+        openCreatePlaylistFromModal() {
+          this.addToPlaylistModal = { show: false, song: this.addToPlaylistModal.song };
+          this.playlistForm = { name: '', visibility: 'private' };
+          this.playlistCreateModal = { show: true };
+        },
+
+        createPlaylist() {
+          const name = this.playlistForm.name.trim();
+          if (!name || !this.userName) return;
+          this.send('playlist_create', {
+            name,
+            visibility: this.playlistForm.visibility,
+            user: this.userName,
+          });
+        },
+
+        // ================================================================
+        // UTILITÁRIOS
+        // ================================================================
+        showToast(msg, type = 'success') {
+          this.toast = { show: true, msg, type };
+          clearTimeout(this._toastTimer);
+          this._toastTimer = setTimeout(() => {
+            this.toast.show = false;
+          }, 3500);
+        },
+
+        formatDuration(seconds) {
+          if (!seconds) return '';
+          const m = Math.floor(seconds / 60);
+          const s = String(Math.floor(seconds % 60)).padStart(2, '0');
+          return `${m}:${s}`;
+        },
+      };
+    }
+
+    // ================================================================
+    // ================================================================
+    // TEMPLATE UNIFICADO DO CARD DE MÚSICA — uma única fonte de verdade
+    // ================================================================
+    function fmtDate(dateStr) {
+      if (!dateStr) return '';
+      const [datePart, timePart] = dateStr.split(' ');
+      if (!datePart || !timePart) return '';
+      const [year, month, day] = datePart.split('-');
+      const [hours, minutes] = timePart.split(':');
+      return `${day}/${month}/${year.slice(-2)} ${hours}:${minutes}`;
+    }
+
+    document.addEventListener('alpine:init', () => {
+      // Store compartilhado para estado de carregando (enqueue pendente)
+      Alpine.store('pending', {
+        ids: {},
+        mark(filepath)   { this.ids[filepath] = true; },
+        unmark(filepath) { delete this.ids[filepath]; },
+        has(filepath)    { return !!this.ids[filepath]; },
+      });
+
+      Alpine.data('songCard', (rawSong) => ({
+        song: rawSong,
+        init() {
+          const tpl = document.getElementById('song-card-tpl');
+          if (!tpl) return;
+          this.$el.appendChild(tpl.content.cloneNode(true));
+          this.$nextTick(() => {
+            Array.from(this.$el.children).forEach(child => Alpine.initTree(child));
+          });
+        },
+        enqueue()    { this.$dispatch('song-enqueue', this.song); },
+        openMenu(btn){ this.$dispatch('song-menu-open', { song: this.song, btn }); },
+      }));
+    });
+  </script>
+
+  <!-- ============================================================ -->
+  <!-- TEMPLATE ÚNICO DO CARD DE MÚSICA — usado em busca, browse e histórico -->
+  <!-- Modificar aqui reflete em TODOS os lugares onde cards aparecem -->
+  <!-- ============================================================ -->
+  <template id="song-card-tpl">
+    <!-- Área de texto (clicável para enfileirar) -->
+    <div class="flex-1 min-w-0 cursor-pointer" @click="enqueue()">
+      <p class="text-sm font-medium truncate" x-text="(song.id ? '['+song.id+'] ' : '') + (song.title || song.clean_filename)"></p>
+      <p class="text-xs text-gray-400 truncate" x-text="song.artist || ''"></p>
+      <p class="text-[10px] text-gray-500 truncate" x-show="song.publisher">
+        <span x-text="song.publisher"></span>
+      </p>
+      <p class="text-[10px] text-gray-600 truncate" x-show="song.last_played || song.play_count">
+        <span x-show="song.play_count" x-text="song.play_count + '× · '"></span>
+        <span x-show="song.ph_user" x-text="song.ph_user + (song.ph_semitones ? ' (' + (song.ph_semitones > 0 ? '+' : '') + song.ph_semitones + ')' : '') + ' · '" class="text-gray-500"></span>
+        <span x-text="fmtDate(song.last_played)"></span>
+      </p>
+    </div>
+    <!-- Coluna direita: badges em cima, botões embaixo -->
+    <div class="flex flex-col items-end justify-between self-stretch flex-shrink-0 gap-1 pl-1">
+
+      <!-- Topo: badges -->
+      <div class="flex items-center gap-1 flex-wrap justify-end">
+        <!-- Vocal / Sem Vocal -->
+        <span
+          class="text-[10px] px-1.5 py-0.5 rounded font-medium"
+          :class="song.has_vocals ? 'bg-blue-900/60 text-blue-300' : 'bg-gray-700/50 text-gray-500'"
+          x-text="song.has_vocals ? 'Vocal' : 'Sem Vocal'"
+        ></span>
+        <!-- Tom musical (? quando desconhecido) -->
+        <span
+          class="text-xs px-1.5 py-0.5 rounded font-mono"
+          :class="song.musical_key ? 'bg-indigo-900/70 text-indigo-300' : 'bg-gray-700/40 text-gray-600'"
+          x-text="song.musical_key || '?'"
+        ></span>
+        <!-- Semitom do histórico (fora de playlist) -->
+        <span
+          x-show="!song._inPlaylist && song.ph_semitones !== 0 && song.ph_semitones !== undefined && song.ph_semitones !== null"
+          class="text-xs px-1.5 py-0.5 rounded font-mono font-bold"
+          :class="song.ph_semitones > 0 ? 'bg-green-900/70 text-green-300' : 'bg-orange-900/70 text-orange-300'"
+          x-text="(song.ph_semitones > 0 ? '+' : '') + song.ph_semitones"
+        ></span>
+        <!-- Semitom da playlist -->
+        <span
+          x-show="song._inPlaylist && (song._semitones || 0) !== 0"
+          class="text-xs px-1.5 py-0.5 rounded font-mono font-bold"
+          :class="(song._semitones || 0) > 0 ? 'bg-green-900/70 text-green-300' : 'bg-orange-900/70 text-orange-300'"
+          x-text="((song._semitones || 0) > 0 ? '+' : '') + (song._semitones || 0)"
+        ></span>
+      </div>
+
+      <!-- Base: botão + e botão ⋮ -->
+      <div class="flex items-center gap-1">
+        <!-- Botão + (adicionar à fila) -->
+        <button
+          @click.stop="enqueue()"
+          :disabled="$store.pending.has(song.filepath)"
+          class="w-7 h-7 flex items-center justify-center rounded-lg bg-emerald-900/50 hover:bg-emerald-700 disabled:opacity-40 text-emerald-400 hover:text-white transition text-lg font-bold"
+          title="Adicionar à fila"
+        >
+          <span x-show="!$store.pending.has(song.filepath)">+</span>
+          <span x-show="$store.pending.has(song.filepath)" class="text-xs animate-spin">⟳</span>
+        </button>
+        <!-- Botão menu ⋮ -->
+        <button
+          @click.stop="openMenu($event.currentTarget)"
+          class="w-7 h-7 flex items-center justify-center rounded-lg bg-gray-700/50 hover:bg-gray-600 text-gray-400 hover:text-white transition text-base leading-none"
+          title="Mais opções"
+        >⋮</button>
+      </div>
+
+    </div>
+  </template>
+
+  <!-- ============================================================ -->
+  <!-- MENU GLOBAL DE MÚSICA — fixed, fora do scroll, z-index alto  -->
+  <!-- ============================================================ -->
+  <div
+    x-show="songMenu.open"
+    @click="closeSongMenu()"
+    class="fixed inset-0 z-[200]"
+    style="display:none"
+  >
+    <div
+      @click.stop
+      class="fixed bg-gray-800 border border-gray-600/50 rounded-xl shadow-2xl py-1.5 whitespace-nowrap"
+      :style="`right: ${songMenu.right}px; bottom: ${songMenu.btnBottom}px;`"
+      x-transition:enter="transition ease-out duration-100"
+      x-transition:enter-start="opacity-0 scale-95"
+      x-transition:enter-end="opacity-100 scale-100"
+      x-transition:leave="transition ease-in duration-75"
+      x-transition:leave-start="opacity-100 scale-100"
+      x-transition:leave-end="opacity-0 scale-95"
+    >
+      <!-- Adicionar à fila (só fora de playlist) -->
+      <button x-show="!songMenu.song?._inPlaylist" @click="songMenuEnqueue()" class="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm text-gray-200 hover:bg-gray-700/70 transition text-left">
+        <span class="text-base w-5 text-center">➕</span>
+        <span>Adicionar à fila</span>
+      </button>
+      <!-- Mudar tom → adicionar à fila (fora de playlist) -->
+      <button x-show="!songMenu.song?._inPlaylist" @click="songMenuChangeTone()" class="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm text-gray-200 hover:bg-gray-700/70 transition text-left">
+        <span class="text-base w-5 text-center">🎚️</span>
+        <span>Escolher tom e adicionar</span>
+      </button>
+      <!-- Preview -->
+      <button x-show="songMenu.song?.id" @click="songMenuPreview()" class="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm text-gray-200 hover:bg-gray-700/70 transition text-left">
+        <span class="text-base w-5 text-center">▶</span>
+        <span>Ouvir preview</span>
+      </button>
+      <!-- Editar -->
+      <button @click="songMenuEdit()" class="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm text-gray-200 hover:bg-gray-700/70 transition text-left">
+        <span class="text-base w-5 text-center">✏️</span>
+        <span>Editar</span>
+      </button>
+      <!-- Adicionar à playlist (só fora de playlist) -->
+      <button x-show="!songMenu.song?._inPlaylist" @click="songMenuPlaylist()" class="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm text-gray-200 hover:bg-gray-700/70 transition text-left">
+        <span class="text-base w-5 text-center">🎵</span>
+        <span>Adicionar à playlist</span>
+      </button>
+      <!-- Mudar tom na playlist (só em playlist editável) -->
+      <button x-show="songMenu.song?._inPlaylist && canEditCurrentPlaylist()" @click="songMenuChangeTone()" class="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm text-gray-200 hover:bg-gray-700/70 transition text-left">
+        <span class="text-base w-5 text-center">🎚️</span>
+        <span>Mudar tom na playlist</span>
+      </button>
+      <!-- Remover da playlist (só em playlist editável) -->
+      <button x-show="songMenu.song?._inPlaylist && canEditCurrentPlaylist()" @click="songMenuRemoveFromPlaylist()" class="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm text-orange-400 hover:bg-orange-900/30 transition text-left">
+        <span class="text-base w-5 text-center">✂️</span>
+        <span>Remover da playlist</span>
+      </button>
+      <!-- Separador -->
+      <div class="border-t border-gray-700/50 my-1 mx-2"></div>
+      <!-- Excluir da biblioteca -->
+      <button @click="songMenuDelete()" class="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm text-red-400 hover:bg-red-900/30 transition text-left">
+        <span class="text-base w-5 text-center">🗑</span>
+        <span>Excluir música</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL DE SELEÇÃO DE TOM                                       -->
+  <!-- ============================================================ -->
+  <div
+    x-show="toneModal.open"
+    @click.self="closeToneModal()"
+    class="fixed inset-0 z-[300] flex items-end justify-center bg-black/60"
+    style="display:none"
+  >
+    <div
+      @click.stop
+      x-transition:enter="transition ease-out duration-200"
+      x-transition:enter-start="opacity-0 translate-y-4"
+      x-transition:enter-end="opacity-100 translate-y-0"
+      x-transition:leave="transition ease-in duration-150"
+      x-transition:leave-start="opacity-100 translate-y-0"
+      x-transition:leave-end="opacity-0 translate-y-4"
+      class="w-full max-w-lg bg-gray-900 border-t border-gray-700 rounded-t-2xl p-5 space-y-4"
+    >
+      <!-- Título -->
+      <div>
+        <p class="text-xs uppercase tracking-widest text-gray-500 mb-0.5"
+          x-text="toneModal.context === 'playlist' ? 'Tom na playlist' : 'Escolher tom'"></p>
+        <p class="text-sm font-medium text-white truncate"
+          x-text="toneModal.song?.title || toneModal.song?.clean_filename || ''"></p>
+        <p class="text-xs text-gray-400 truncate" x-text="toneModal.song?.artist || ''"></p>
+      </div>
+      <!-- Controles de tom -->
+      <div class="flex items-center justify-center gap-4">
+        <button
+          @click="toneModal.semitones = Math.max(-12, toneModal.semitones - 1)"
+          class="w-10 h-10 rounded-full bg-gray-700 hover:bg-gray-600 text-xl font-bold transition"
+        >−</button>
+        <div class="text-center min-w-[64px]">
+          <span
+            class="text-3xl font-bold font-mono"
+            :class="toneModal.semitones > 0 ? 'text-green-400' : toneModal.semitones < 0 ? 'text-orange-400' : 'text-gray-300'"
+            x-text="(toneModal.semitones > 0 ? '+' : '') + toneModal.semitones"
+          ></span>
+          <p class="text-xs text-gray-500 mt-0.5">semitons</p>
+        </div>
+        <button
+          @click="toneModal.semitones = Math.min(12, toneModal.semitones + 1)"
+          class="w-10 h-10 rounded-full bg-gray-700 hover:bg-gray-600 text-xl font-bold transition"
+        >+</button>
+      </div>
+      <!-- Tom resultante (só quando a música tem tom cadastrado) -->
+      <div x-show="toneModal.song?.musical_key" class="flex items-center justify-center gap-3">
+        <span class="text-xs text-gray-500" x-text="toneModal.song?.musical_key">Tom original</span>
+        <span class="text-gray-600">→</span>
+        <span
+          class="text-lg font-bold font-mono px-3 py-1 rounded-lg"
+          :class="toneModal.semitones === 0
+            ? 'bg-indigo-900/70 text-indigo-300'
+            : toneModal.semitones > 0
+              ? 'bg-green-900/70 text-green-300'
+              : 'bg-orange-900/70 text-orange-300'"
+          x-text="transposeKey(toneModal.song?.musical_key, toneModal.semitones)"
+        ></span>
+      </div>
+      <!-- Botão zero -->
+      <div class="flex justify-center">
+        <button @click="toneModal.semitones = 0" class="text-xs text-gray-500 hover:text-gray-300 transition px-3 py-1 rounded-lg bg-gray-800 hover:bg-gray-700">
+          Zerar tom
+        </button>
+      </div>
+      <!-- Botões de ação -->
+      <div class="flex gap-2 pt-1">
+        <button @click="closeToneModal()" class="flex-1 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 transition">
+          Cancelar
+        </button>
+        <button @click="toneModalConfirm()" class="flex-1 py-2.5 rounded-xl bg-purple-700 hover:bg-purple-600 text-sm font-medium text-white transition"
+          x-text="toneModal.context === 'playlist' ? 'Salvar na playlist' : 'Adicionar à fila'">
+        </button>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

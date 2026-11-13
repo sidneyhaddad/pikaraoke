@@ -10,7 +10,6 @@ qrcode.png
 image-build/
 *.img
 *.img.xz
-pikaraoke-ws
 
 # admin SSH keys baked into images (kept out of git)
 scripts/authorized_keys
