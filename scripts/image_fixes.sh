@@ -188,6 +188,14 @@ EOF
         echo "WARNING: pikaraoke-wifi-portal.py not found next to image_fixes.sh" >&2
     fi
 
+    # ── 11. Source-based routing (cable + Wi-Fi in the same network) ──────
+    if [ -f "$PK_FIXES_DIR/pikaraoke-source-routing" ]; then
+        mkdir -p "$R/etc/NetworkManager/dispatcher.d"
+        install -m 755 -o root -g root "$PK_FIXES_DIR/pikaraoke-source-routing" \
+            "$R/etc/NetworkManager/dispatcher.d/50-pikaraoke-source-routing"
+        _fx_log "Source-based routing installed (Wi-Fi IP answers with cable plugged in)"
+    fi
+
     # ── 10. Song library: app code + empty database ───────────────────────
     # The app scans the song folder on startup and imports what it finds;
     # the image must not carry a database listing songs it does not have.

@@ -1,0 +1,45 @@
+#!/bin/bash
+# NetworkManager dispatcher: source-based routing for PiKaraoke.
+#
+# When the Pi is on cable AND Wi-Fi in the same network, Linux answers
+# everything through the interface with the best default route (eth0),
+# even requests that arrived on wlan0 - so the Wi-Fi IP (the one avahi
+# may publish as myvikaraoke.local) stops answering. This keeps replies on
+# the interface whose address they come from: one routing table per
+# interface plus a "from <ip>" rule.
+#
+# Installed as /etc/NetworkManager/dispatcher.d/50-pikaraoke-source-routing
+
+IFACE="$1"
+ACTION="$2"
+
+case "$IFACE" in
+    eth0)  TABLE=101 ;;
+    wlan0) TABLE=102 ;;
+    *)     exit 0 ;;
+esac
+PRIO=$((1000 + TABLE))
+
+clear_table() {
+    while ip -4 rule del priority "$PRIO" 2>/dev/null; do :; done
+    ip -4 route flush table "$TABLE" 2>/dev/null
+}
+
+case "$ACTION" in
+    up|dhcp4-change|connectivity-change|reapply)
+        clear_table
+        ADDR="${IP4_ADDRESS_0%% *}"          # 10.50.2.129/24
+        GW="${IP4_GATEWAY:-${IP4_ADDRESS_0##* }}"
+        [ -n "$ADDR" ] && [ -n "$GW" ] && [ "$GW" != "$ADDR" ] && [ "$GW" != "0.0.0.0" ] || exit 0
+        IP="${ADDR%/*}"
+        NET=$(ip -4 route show dev "$IFACE" proto kernel scope link | awk '{print $1; exit}')
+        [ -n "$NET" ] && ip -4 route replace "$NET" dev "$IFACE" src "$IP" table "$TABLE"
+        ip -4 route replace default via "$GW" dev "$IFACE" table "$TABLE"
+        ip -4 rule add from "$IP" table "$TABLE" priority "$PRIO"
+        logger -t pikaraoke-routing "$IFACE: replies from $IP go out $IFACE (table $TABLE)"
+        ;;
+    down|pre-down)
+        clear_table
+        ;;
+esac
+exit 0
