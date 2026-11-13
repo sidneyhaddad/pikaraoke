@@ -33,6 +33,7 @@ MAX_REMOVE_RATIO = 0.5
 SCHEMA_SQL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           "db", "schema.sql")
 
+_TRANSPOSED = re.compile(r"_Tom[+-]?\d+$")
 _YT_ID = re.compile(r"---[A-Za-z0-9_-]{6,20}(\.f\d+)?$")
 _NOISE = re.compile(
     r"\s*[\(\[]\s*(karaok[eê][^\)\]]*|instrumental[^\)\]]*|lyrics?[^\)\]]*|"
@@ -108,10 +109,6 @@ def sync_library(download_path, db_path=None):
     """Sync karaoke.db (default: <download_path>/karaoke.db) with the files in
     download_path. Returns the sorted list of song file paths."""
     files = scan_folder(download_path)
-    on_disk = set(files)
-    by_name = {}
-    for f in files:
-        by_name.setdefault(os.path.basename(f), f)
 
     db_path = db_path or os.path.join(download_path, DB_NAME)
     new_db = not os.path.exists(db_path)
@@ -123,6 +120,21 @@ def sync_library(download_path, db_path=None):
     conn.row_factory = sqlite3.Row
     try:
         ensure_schema(conn)
+        # Pitch-shifted copies made by the app ("Song_Tom-2.zip") are a cache,
+        # not songs: leave them out of the library.
+        transposed = set()
+        try:
+            transposed = {r[0] for r in conn.execute(
+                "SELECT transposed_filepath FROM transposed_songs")}
+        except sqlite3.Error:
+            pass
+        files = [f for f in files
+                 if f not in transposed and not _TRANSPOSED.search(os.path.splitext(f)[0])]
+        on_disk = set(files)
+        by_name = {}
+        for f in files:
+            by_name.setdefault(os.path.basename(f), f)
+
         rows = conn.execute(
             "SELECT id, filepath, original_filename, clean_filename FROM songs"
         ).fetchall()

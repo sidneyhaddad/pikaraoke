@@ -139,6 +139,25 @@ def test_skipped_folders_are_not_imported(tmp_path):
     assert [os.path.basename(p) for p in sl.sync_library(str(tmp_path))] == ["A - One.mp4"]
 
 
+def test_transposed_copies_are_not_imported(tmp_path):
+    touch(tmp_path / "A - One.zip")
+    touch(tmp_path / "A - One_Tom-2.zip")
+    touch(tmp_path / "A - One_Tom+3_Tom-1.zip")
+    touch(tmp_path / "B - Two.mp4")
+    sl.sync_library(str(tmp_path))
+    c = sqlite3.connect(tmp_path / "karaoke.db")
+    c.execute("INSERT INTO transposed_songs (original_filepath, semitones, transposed_filepath)"
+              " VALUES (?, 4, ?)", ((tmp_path / "B - Two.mp4").as_posix(),
+                                    (tmp_path / "B - Two up4.mp4").as_posix()))
+    c.commit()
+    c.close()
+    touch(tmp_path / "B - Two up4.mp4")
+
+    names = sorted(os.path.basename(p) for p in sl.sync_library(str(tmp_path)))
+
+    assert names == ["A - One.zip", "B - Two.mp4"]
+
+
 def test_history_and_playlists_are_never_touched(tmp_path):
     touch(tmp_path / "A - One.mp4")
     sl.sync_library(str(tmp_path))
