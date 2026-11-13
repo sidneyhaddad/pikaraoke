@@ -54,8 +54,12 @@ cleanup() {
 trap cleanup EXIT
 
 run_in_chroot() {
-    chroot "$ROOTFS" /bin/bash -c "$1"
+    chroot "$ROOTFS" /bin/bash -ec "$1"
 }
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=image_fixes.sh
+source "$SCRIPT_DIR/image_fixes.sh"
 
 # ── Phase 0: Prerequisites ────────────────────────────────────────────────
 log "Phase 0: Checking prerequisites"
@@ -212,6 +216,7 @@ run_in_chroot "
         libsdl2-image-2.0-0 \
         libsdl2-mixer-2.0-0 \
         pipewire-pulse \
+        python3-pygame \
         libcap2-bin \
         usbutils \
         exfat-fuse \
@@ -232,7 +237,6 @@ run_in_chroot "
         Flask \
         pillow \
         'qrcode[pil]' \
-        'pygame==2.1.0' \
         yt_dlp \
         psutil \
         unidecode \
@@ -345,8 +349,8 @@ log "Phase 9: Creating systemd services"
 cat > "$ROOTFS/etc/systemd/system/pikaraoke.service" << EOF
 [Unit]
 Description=PiKaraoke - Karaoke Server
-After=network.target sound.target graphical.target mnt-pikaraoke\\x2dsongs.automount
-Wants=mnt-pikaraoke\\x2dsongs.automount
+After=network-online.target sound.target display-manager.service mnt-pikaraoke\\x2dsongs.automount
+Wants=network-online.target mnt-pikaraoke\\x2dsongs.automount
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -536,6 +540,10 @@ run_in_chroot "
     systemctl disable cups-browsed.service 2>/dev/null || true
     systemctl disable ModemManager.service 2>/dev/null || true
 "
+
+# ── Phase 12b: Boot straight into karaoke (SSH, BR, no wizard) ──────────
+log "Phase 12b: Applying image fixes"
+apply_pikaraoke_fixes "$ROOTFS"
 
 # ── Phase 13: Cleanup ────────────────────────────────────────────────────
 log "Phase 13: Cleanup"
