@@ -27,6 +27,7 @@ PORTAL_PORT = 8888
 BOOT_GRACE = 45          # seconds to let saved Wi-Fi connect before opening the hotspot
 CHECK_EVERY = 20
 CONNECT_TIMEOUT = 100
+CONNECT_ATTEMPTS = 3
 KARAOKE_URL = "http://myvikaraoke.local/"
 
 logging.basicConfig(level=logging.INFO, format="[wifi-portal] %(message)s")
@@ -141,6 +142,16 @@ def hotspot_down():
     log("hotspot down")
 
 
+def reset_radio():
+    """Leave AP mode cleanly: cycle the Wi-Fi radio and rescan."""
+    run("nmcli", "radio", "wifi", "off")
+    time.sleep(2)
+    ensure_radio()
+    time.sleep(3)
+    run("nmcli", "device", "wifi", "rescan", "ifname", IFACE, timeout=20)
+    time.sleep(5)
+
+
 def try_connect(ssid, password):
     con = f"wifi-{ssid}"[:60]
     with lock:
@@ -155,7 +166,16 @@ def try_connect(ssid, password):
             cmd += ["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password]
         rc, out = run(*cmd)
         if rc == 0:
-            rc, out = run("nmcli", "--wait", str(CONNECT_TIMEOUT - 5), "connection", "up", con, timeout=CONNECT_TIMEOUT)
+            # Right after AP mode the brcmfmac radio often fails to tune
+            # ("set chanspec fail", ASSOC-REJECT) and NetworkManager reports
+            # it as missing secrets. Reset the radio and retry a few times.
+            for attempt in range(1, CONNECT_ATTEMPTS + 1):
+                reset_radio()
+                rc, out = run("nmcli", "--wait", str(CONNECT_TIMEOUT - 5), "connection", "up", con,
+                              timeout=CONNECT_TIMEOUT)
+                if rc == 0:
+                    break
+                log(f"connect to '{ssid}' attempt {attempt} failed: {out.splitlines()[-1] if out else ''}")
         if rc == 0:
             log(f"connected to '{ssid}'")
             state["error"] = ""
@@ -218,7 +238,7 @@ def page_connecting(ssid):
 <p>Conectando o karaokê em <b>{html.escape(ssid)}</b>…</p>
 <p>Esta rede de configuração vai desligar. Conecte seu celular em
 <b>{html.escape(ssid)}</b> e abra <a href="{KARAOKE_URL}">{KARAOKE_URL}</a>.</p>
-<p><small>Se a senha estiver errada, a rede <b>{HOTSPOT_SSID}</b> volta em cerca de 2 minutos
+<p><small>Se a senha estiver errada, a rede <b>{HOTSPOT_SSID}</b> volta em alguns minutos
 com uma mensagem de erro.</small></p></div></body></html>"""
 
 
