@@ -15,6 +15,7 @@ from unidecode import unidecode
 from constants import COLORS
 
 from lib import vlcclient
+from lib import song_library
 from lib.get_platform import get_platform
 
 DOCKER_MODE = os.environ.get("DOCKER_MODE", "").lower() in ("1", "true", "yes")
@@ -468,23 +469,15 @@ class Karaoke:
         return rc
 
     def get_available_songs(self):
-        db_path = os.path.join(self.download_path, 'karaoke.db')
-        if not os.path.exists(db_path):
-            logging.warning("karaoke.db not found at %s, falling back to filesystem scan" % db_path)
-            self._get_available_songs_from_fs()
-            return
+        # Scan the song folder and sync karaoke.db with it: new files are
+        # imported, moved files get their path fixed, and rows whose file is
+        # gone are removed (with a safety limit, see lib/song_library.py).
+        # A missing karaoke.db is created from scratch from db/schema.sql.
         try:
-            import sqlite3
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT filepath FROM songs ORDER BY lower(clean_filename)"
-            ).fetchall()
-            conn.close()
-            self.available_songs = [r["filepath"] for r in rows]
-            logging.info(f"Loaded {len(self.available_songs)} songs from karaoke.db")
+            self.available_songs = song_library.sync_library(self.download_path)
+            logging.info(f"Loaded {len(self.available_songs)} songs (folder scan + karaoke.db)")
         except Exception as e:
-            logging.error(f"get_available_songs DB error: {e}")
+            logging.error(f"get_available_songs DB sync error: {e}")
             self._get_available_songs_from_fs()
 
     def _get_available_songs_from_fs(self):

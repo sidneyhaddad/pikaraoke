@@ -193,8 +193,10 @@ Browser → Flask (app.py) → Karaoke engine (karaoke.py) → VLCClient/OMXClie
 
 ### Song Library
 
-- Primary: SQLite database at `<download_path>/karaoke.db` (table `songs`, column `filepath`)
-- Fallback: filesystem scan via `pathlib.Path.rglob('*.*')` for extensions: `.mp4`, `.mp3`, `.zip`, `.mkv`, `.avi`, `.webm`, `.mov`
+- SQLite database at `<download_path>/karaoke.db` (table `songs`, column `filepath`). It is **not** in git: only its schema is (`db/schema.sql`).
+- On startup and on `/refresh`, `lib/song_library.py` scans the song folder and syncs the database: creates it from `db/schema.sql` if missing, imports new files (artist/title from the file name), fixes paths of moved files (keeping metadata), removes rows whose file is gone, and keeps `songs_fts` in step. Play history, playlists and transpositions are never touched.
+- Safety: nothing is removed when the scan finds no files or would remove more than half the table (e.g. drive not mounted). Folders named `excluido`/`deleted`/`trash` and hidden folders are skipped. A file whose name equals an existing row's `original_filename` (the yt-dlp source of a renamed song) is not imported again.
+- Fallback if the sync fails: plain filesystem listing for `.mp4`, `.mp3`, `.zip`, `.mkv`, `.avi`, `.webm`, `.mov`, `.m4a`
 - Filenames are source of truth: `Artist - Song Title---YouTubeID.ext`
 - `filename_from_path()` strips path, extension, and `---<id>` suffix
 
